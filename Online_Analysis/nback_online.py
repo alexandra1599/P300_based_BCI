@@ -9,17 +9,17 @@ import pyautogui
 from pylsl import StreamInlet, resolve_stream
 import numpy as np
 from collections import deque
-from feedback_utils import (
+from Utils.feedback_utils import (
     draw_fixation_cross,
     show_feedback,
 )
 from logger import log_trial_prediction
 
 # Stream Utilites
-from stream_utils import get_channel_from_lsl
+from Utils.stream_utils import get_channel_from_lsl
 
 # Configuration Parameters
-import config
+from Utils import config
 
 # Performance Evaluation (Classification Metrics)
 from sklearn.metrics import confusion_matrix

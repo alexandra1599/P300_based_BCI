@@ -1,5 +1,16 @@
 import numpy as np
 from scipy.stats import spearmanr
+import matplotlib as plt
+from CPP_Analysis import (
+    compare_cpp_conditions,
+    cpp_buildup_rate_analysis,
+    cpp_latency_distribution_analysis,
+    cpp_p300_relationship,
+    detect_cpp_onset,
+    cpp_onset_analysis,
+    compare_cpp_slopes,
+    comprehensive_cpp_report,
+)
 
 
 def p3_metrics(
@@ -219,7 +230,6 @@ def cluster_latency_and_plot(
     }
 
 
-import numpy as np
 from scipy.signal import correlate
 
 
@@ -275,6 +285,16 @@ def woody_align_window(
     return X_aligned, shifts * dt
 
 
+from Visualize_ERP import (
+    time_frequency_analysis,
+    difference_wave_analysis,
+    latency_distribution_analysis,
+    cluster_based_comparison,
+)
+
+import os
+
+
 def run_analysis(
     ID,
     session,
@@ -288,15 +308,19 @@ def run_analysis(
     fs=512,
     comparison=None,
 ):
-    import numpy as np
     import matplotlib.pyplot as plt
     from scipy.ndimage import gaussian_filter1d
+
+    output_dir = (
+        f"/home/alexandra-admin/Documents/Offline/offline_logs/sub-{ID}/erp_figures"
+    )
+    os.makedirs(output_dir, exist_ok=True)
 
     # === Channel indices (adjust based on session) ===
     if session == "tACS":
         pz, cz, c1, c2 = 11, 15, 19, 21
     elif session == "Relaxation":
-        pz, cz, cpz, c1, c2 = 26, 15, 20, 19, 21
+        nt, fz, pz, cz, cpz, c1, c2 = 9, 6, 26, 15, 20, 20, 23
 
     prompt = "CPP[1] or P300[2] or Target[3] analysis: "
     c = int(input(prompt))
@@ -304,35 +328,44 @@ def run_analysis(
     time_ms = np.arange(p300_pre.shape[0]) * 1000 / fs
 
     if c == 1:  # === CPP Analysis ===
+        print("\n" + "=" * 60)
+        print("CPP (Centro-Parietal Positivity) Analysis")
+        print("=" * 60)
+
+        # CPP channels (CP1, CP2 or C1, C2)
+        cpp_channels = [c1, c2]
+        cpp_channel_names = (
+            [labels[c1], labels[c2]] if c1 < len(labels) else ["CP1", "CP2"]
+        )
+        print(f"Using CPP channels: {cpp_channel_names} (indices: {cpp_channels})")
+
         if comparison == None:
-            cpp_pre = np.mean(nop300_pre[:, [c1, c2], :], axis=1)  # (samples, trials)
-            cpp_pre = np.mean(cpp_pre, axis=1)  # (samples,)
+            # === 1. Basic CPP waveform comparison ===
+            print("\n=== Basic CPP Waveform (Pre vs Post) ===")
+            cpp_pre = np.mean(nop300_pre[:, cpp_channels, :], axis=1).mean(axis=1)
+            cpp_post = np.mean(nop300_post[:, cpp_channels, :], axis=1).mean(axis=1)
 
-            cpp_post = np.mean(nop300_post[:, [c1, c2], :], axis=1)
-            cpp_post = np.mean(cpp_post, axis=1)
+            stdpre = np.std(nop300_pre[:, cpp_channels, :], axis=1).mean(
+                axis=1
+            ) / np.sqrt(nop300_pre.shape[2])
+            stdpost = np.std(nop300_post[:, cpp_channels, :], axis=1).mean(
+                axis=1
+            ) / np.sqrt(nop300_post.shape[2])
 
-            stdpre = np.std(nop300_pre[:, [c1, c2], :], axis=1) / np.sqrt(
-                nop300_pre.shape[2]
-            )
-            stdpre = np.mean(stdpre, axis=1)
-
-            stdpost = np.std(nop300_post[:, [c1, c2], :], axis=1) / np.sqrt(
-                nop300_post.shape[2]
-            )
-            stdpost = np.mean(stdpost, axis=1)
-
-            plt.figure()
+            fig = plt.figure(figsize=(10, 6))
             plt.plot(
                 time_ms,
                 gaussian_filter1d(cpp_pre, sigma=2),
                 label="CPP Pre",
                 color="blue",
+                linewidth=2,
             )
             plt.plot(
                 time_ms,
                 gaussian_filter1d(cpp_post, sigma=2),
                 label="CPP Post",
                 color="red",
+                linewidth=2,
             )
             plt.fill_between(
                 time_ms, cpp_pre - stdpre, cpp_pre + stdpre, color="blue", alpha=0.2
@@ -340,78 +373,279 @@ def run_analysis(
             plt.fill_between(
                 time_ms, cpp_post - stdpost, cpp_post + stdpost, color="red", alpha=0.2
             )
-            plt.title("CPP Analysis (CP1 + CP2)")
+            plt.axvspan(200, 500, alpha=0.1, color="yellow", label="CPP window")
+            plt.axhline(0, color="k", linestyle="-", linewidth=0.5)
+            plt.axvline(0, color="k", linestyle="--", linewidth=1)
+            plt.title("CPP Analysis (CP1 + CP2)", fontsize=14, fontweight="bold")
             plt.xlabel("Time (ms)")
             plt.ylabel("Amplitude (µV)")
             plt.legend()
             plt.grid(True)
+            plt.tight_layout()
 
-            plt.show()
+            save_path = os.path.join(output_dir, "cpp_pre_vs_post.png")
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
+            print(f"✅ Saved: cpp_pre_vs_post.png")
+            plt.close(fig)
+
+            # === 2. CPP Latency Distribution (PRE) ===
+            print("\n=== CPP Latency Distribution (Pre) ===")
+            try:
+                lat_fig, lat_stats = cpp_latency_distribution_analysis(
+                    nop300_pre, time_ms, cpp_channels, window=(200, 500)
+                )
+                save_path = os.path.join(output_dir, "cpp_latency_pre.png")
+                lat_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                print(f"✅ Saved: cpp_latency_pre.png")
+                print(
+                    f"   Mean latency: {lat_stats['mean_lat']:.1f} ± {lat_stats['std_lat']:.1f} ms"
+                )
+                plt.close(lat_fig)
+            except Exception as e:
+                print(f"❌ Error in CPP latency analysis: {e}")
+
+            # === 3. CPP Latency Distribution (POST) ===
+            print("\n=== CPP Latency Distribution (Post) ===")
+            try:
+                lat_fig, lat_stats = cpp_latency_distribution_analysis(
+                    nop300_post, time_ms, cpp_channels, window=(200, 500)
+                )
+                save_path = os.path.join(output_dir, "cpp_latency_post.png")
+                lat_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                print(f"✅ Saved: cpp_latency_post.png")
+                print(
+                    f"   Mean latency: {lat_stats['mean_lat']:.1f} ± {lat_stats['std_lat']:.1f} ms"
+                )
+                plt.close(lat_fig)
+            except Exception as e:
+                print(f"❌ Error in CPP latency analysis: {e}")
+
+            # === 4. CPP Buildup Rate (PRE) ===
+            print("\n=== CPP Buildup Rate Analysis (Pre) ===")
+            try:
+                buildup_fig, buildup_stats = cpp_buildup_rate_analysis(
+                    nop300_pre,
+                    time_ms,
+                    cpp_channels,
+                    baseline_window=(-200, 0),
+                    buildup_window=(0, 500),
+                )
+                save_path = os.path.join(output_dir, "cpp_buildup_pre.png")
+                buildup_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                print(f"✅ Saved: cpp_buildup_pre.png")
+                print(
+                    f"   Mean buildup rate: {buildup_stats['mean_slope']:.2f} ± {buildup_stats['std_slope']:.2f} µV/s"
+                )
+                plt.close(buildup_fig)
+            except Exception as e:
+                print(f"❌ Error in CPP buildup analysis: {e}")
+
+                # === CPP ONSET ANALYSIS ===
+            print("\n=== CPP Onset Detection ===")
+            for name, data in [("Pre", nop300_pre), ("Post", nop300_post)]:
+                try:
+                    onset_fig, onset_stats = cpp_onset_analysis(
+                        data,
+                        time_ms,
+                        cpp_channels,
+                        baseline_window=(-200, 0),
+                        search_window=(0, 400),
+                    )
+                    save_path = os.path.join(
+                        output_dir, f"cpp_onset_{name.lower()}.png"
+                    )
+                    onset_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                    print(f"✅ Saved: cpp_onset_{name.lower()}.png")
+                    print(
+                        f"   {name} CPP onset: {onset_stats['mean_onset']:.1f} ± {onset_stats['std_onset']:.1f} ms"
+                    )
+                    plt.close(onset_fig)
+                except Exception as e:
+                    print(f"❌ Error in {name} onset analysis: {e}")
+
+            # === CPP BUILDUP RATE ===
+            print("\n=== CPP Buildup Rate Analysis ===")
+            for name, data in [("Pre", nop300_pre), ("Post", nop300_post)]:
+                try:
+                    buildup_fig, buildup_stats = cpp_buildup_rate_analysis(
+                        data,
+                        time_ms,
+                        cpp_channels,
+                        baseline_window=(-200, 0),
+                        buildup_window=(0, 500),
+                    )
+                    save_path = os.path.join(
+                        output_dir, f"cpp_buildup_{name.lower()}.png"
+                    )
+                    buildup_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                    print(f"✅ Saved: cpp_buildup_{name.lower()}.png")
+                    print(
+                        f"   {name} buildup rate: {buildup_stats['mean_slope']:.2f} ± {buildup_stats['std_slope']:.2f} µV/s"
+                    )
+                    plt.close(buildup_fig)
+                except Exception as e:
+                    print(f"❌ Error in {name} buildup analysis: {e}")
+
+            # === CPP-P300 RELATIONSHIP ===
+            print("\n=== CPP-P300 Relationship Analysis ===")
+            for name, cpp_data, p300_data in [
+                ("Pre", nop300_pre, p300_pre),
+                ("Post", nop300_post, p300_post),
+            ]:
+                try:
+                    rel_fig, rel_stats = cpp_p300_relationship(
+                        cpp_data,
+                        p300_data,
+                        time_ms,
+                        cpp_channels,
+                        pz,
+                        cpp_window=(200, 500),
+                        p300_window=(300, 600),
+                    )
+                    save_path = os.path.join(
+                        output_dir, f"cpp_p300_relationship_{name.lower()}.png"
+                    )
+                    rel_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                    print(f"✅ Saved: cpp_p300_relationship_{name.lower()}.png")
+                    print(
+                        f"   {name} CPP Amp → P300 Amp: r = {rel_stats['corr_amp_amp']:.3f}, p = {rel_stats['p_amp_amp']:.4f}"
+                    )
+                    plt.close(rel_fig)
+                except Exception as e:
+                    print(f"❌ Error in {name} CPP-P300 analysis: {e}")
 
         elif comparison == 1:
-            cpp_pre = np.mean(nop300_pre[:, [c1, c2], :], axis=1)  # (samples, trials)
-            cpp_pre = np.mean(cpp_pre, axis=1)  # (samples,)
+            # === WITH ONLINE DATA ===
+            print("\n=== CPP Comparison: Pre vs Post vs Online ===")
+            try:
+                comp_fig = compare_cpp_conditions(
+                    nop300_pre, nop300_post, nop300_online, time_ms, cpp_channels
+                )
+                save_path = os.path.join(output_dir, "cpp_three_way_comparison.png")
+                comp_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                print(f"✅ Saved: cpp_three_way_comparison.png")
+                plt.close(comp_fig)
+            except Exception as e:
+                print(f"❌ Error in CPP comparison: {e}")
 
-            cpp_post = np.mean(nop300_post[:, [c1, c2], :], axis=1)
-            cpp_post = np.mean(cpp_post, axis=1)
+            # Latency analysis for all three
+            for name, data in [
+                ("Pre", nop300_pre),
+                ("Post", nop300_post),
+                ("Online", nop300_online),
+            ]:
+                print(f"\n=== CPP Latency Distribution ({name}) ===")
+                try:
+                    lat_fig, lat_stats = cpp_latency_distribution_analysis(
+                        data, time_ms, cpp_channels, window=(200, 500)
+                    )
+                    save_path = os.path.join(
+                        output_dir, f"cpp_latency_{name.lower()}.png"
+                    )
+                    lat_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                    print(f"✅ Saved: cpp_latency_{name.lower()}.png")
+                    print(
+                        f"   Mean latency: {lat_stats['mean_lat']:.1f} ± {lat_stats['std_lat']:.1f} ms"
+                    )
+                    plt.close(lat_fig)
+                except Exception as e:
+                    print(f"❌ Error: {e}")
 
-            cpp_online = np.mean(nop300_online[:, [c1, c2], :], axis=1)
-            cpp_online = np.mean(cpp_online, axis=1)
+                    # 1. Slope comparison
+            print("\n--- CPP Slope Comparison ---")
+            try:
+                slope_fig, slope_stats = compare_cpp_slopes(
+                    nop300_pre,
+                    nop300_post,
+                    nop300_online,
+                    time_ms,
+                    cpp_channels,
+                    buildup_window=(0, 500),
+                )
+                save_path = os.path.join(output_dir, "cpp_slope_comparison.png")
+                slope_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                print(f"✅ Saved: cpp_slope_comparison.png")
+                plt.close(slope_fig)
+            except Exception as e:
+                print(f"❌ Error in slope comparison: {e}")
 
-            stdpre = np.std(nop300_pre[:, [c1, c2], :], axis=1) / np.sqrt(
-                nop300_pre.shape[2]
-            )
-            stdpre = np.mean(stdpre, axis=1)
+            # 2. Onset analysis for all three
+            print("\n--- CPP Onset Analysis (All Conditions) ---")
+            for name, data in [
+                ("Pre", nop300_pre),
+                ("Post", nop300_post),
+                ("Online", nop300_online),
+            ]:
+                try:
+                    onset_fig, onset_stats = cpp_onset_analysis(
+                        data, time_ms, cpp_channels
+                    )
+                    save_path = os.path.join(
+                        output_dir, f"cpp_onset_{name.lower()}.png"
+                    )
+                    onset_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                    print(
+                        f"✅ {name}: onset = {onset_stats['mean_onset']:.1f} ± {onset_stats['std_onset']:.1f} ms"
+                    )
+                    plt.close(onset_fig)
+                except Exception as e:
+                    print(f"❌ {name}: {e}")
 
-            stdpost = np.std(nop300_post[:, [c1, c2], :], axis=1) / np.sqrt(
-                nop300_post.shape[2]
-            )
-            stdpost = np.mean(stdpost, axis=1)
+            # 3. CPP-P300 relationships
+            print("\n--- CPP-P300 Relationships (All Conditions) ---")
+            for name, cpp_data, p300_data in [
+                ("Pre", nop300_pre, p300_pre),
+                ("Post", nop300_post, p300_post),
+                ("Online", nop300_online, p300_online),
+            ]:
+                try:
+                    rel_fig, rel_stats = cpp_p300_relationship(
+                        cpp_data, p300_data, time_ms, cpp_channels, pz
+                    )
+                    save_path = os.path.join(
+                        output_dir, f"cpp_p300_relationship_{name.lower()}.png"
+                    )
+                    rel_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                    print(
+                        f"✅ {name}: CPP Slope → P300 Amp: r = {rel_stats['corr_slope_amp']:.3f}"
+                    )
+                    plt.close(rel_fig)
+                except Exception as e:
+                    print(f"❌ {name}: {e}")
 
-            std_online = np.std(nop300_online[:, [c1, c2], :], axis=1) / np.sqrt(
-                nop300_online.shape[2]
-            )
-            std_online = np.mean(std_online, axis=1)
+            # 4. Comprehensive report
+            print("\n--- Generating Comprehensive Report ---")
+            try:
+                report = comprehensive_cpp_report(
+                    nop300_pre,
+                    nop300_post,
+                    nop300_online,
+                    p300_pre,
+                    p300_post,
+                    p300_online,
+                    time_ms,
+                    cpp_channels,
+                    pz,
+                    labels,
+                )
+                # Save report to text file
+                report_path = os.path.join(output_dir, "cpp_comprehensive_report.txt")
+                with open(report_path, "w") as f:
+                    f.write("=" * 70 + "\n")
+                    f.write("COMPREHENSIVE CPP ANALYSIS REPORT\n")
+                    f.write("=" * 70 + "\n")
+                    f.write(f"\nSubject ID: {ID}\n")
+                    f.write(f"Session: {session}\n")
+                    f.write(f"CPP Channels: {cpp_channel_names}\n")
+                    f.write(f"\n" + str(report))
+                print(f"✅ Saved comprehensive report: cpp_comprehensive_report.txt")
+            except Exception as e:
+                print(f"❌ Error generating report: {e}")
 
-            plt.figure()
-            plt.plot(
-                time_ms,
-                gaussian_filter1d(cpp_pre, sigma=2),
-                label="CPP Pre Offline",
-                color="blue",
-            )
-            plt.plot(
-                time_ms,
-                gaussian_filter1d(cpp_post, sigma=2),
-                label="CPP Post Offline",
-                color="red",
-            )
-            plt.plot(
-                time_ms,
-                gaussian_filter1d(cpp_online, sigma=2),
-                label="CPP Online",
-                color="green",
-            )
-            plt.fill_between(
-                time_ms, cpp_pre - stdpre, cpp_pre + stdpre, color="blue", alpha=0.2
-            )
-            plt.fill_between(
-                time_ms, cpp_post - stdpost, cpp_post + stdpost, color="red", alpha=0.2
-            )
-            plt.fill_between(
-                time_ms,
-                cpp_online - std_online,
-                cpp_online + std_online,
-                color="green",
-                alpha=0.2,
-            )
-            plt.title("CPP Analysis Comparison (CP1 + CP2)")
-            plt.xlabel("Time (ms)")
-            plt.ylabel("Amplitude (µV)")
-            plt.legend()
-            plt.grid(True)
-
-            plt.show()
+        print("\n" + "=" * 70)
+        print("✅ ENHANCED CPP ANALYSIS COMPLETE!")
+        print(f"📁 All figures saved to: {output_dir}")
+        print("=" * 70)
 
     elif c == 2:  # === P300 Target Analysis ===
         if comparison == None:
@@ -448,7 +682,7 @@ def run_analysis(
                 color="red",
                 alpha=0.2,
             )
-            plt.title("P300 Analysis at Pz")
+            plt.title("P300 Analysis at Fz")
             plt.xlabel("Time (ms)")
             plt.ylabel("Amplitude (µV)")
             plt.legend()
@@ -459,6 +693,46 @@ def run_analysis(
             m_post = p3_metrics(time_ms, pz_post_target)  # red
             print("P300 pre metrics :", m_pre)
             print("P300 post metrics :", m_post)
+
+            # Time-frequency
+            print("\n=== Time-Frequency Analysis ===")
+            tf_fig, _, _ = time_frequency_analysis(p300_pre, fs=512, channel_idx=pz)
+            plt.show()
+
+            # Difference waves
+            print("\n=== Difference Wave Analysis ===")
+            diff_fig = difference_wave_analysis(
+                p300_pre,
+                p300_post,
+                time_ms,
+                channels_to_plot=[25, 6, cz],
+                labels=labels,
+            )
+            plt.show()  # <-- Change this
+            plt.pause(0.1)
+
+            # Latency distribution
+            print("\n=== Latency Distribution Analysis Pre ===")
+            lat_fig, lat_stats = latency_distribution_analysis(
+                p300_pre, time_ms, 25, window=(250, 600)
+            )
+            plt.show()
+            plt.pause(0.1)
+
+            # Latency distribution
+            print("\n=== Latency Distribution Analysis Post ===")
+            lat_fig, lat_stats = latency_distribution_analysis(
+                p300_post, time_ms, 25, window=(250, 600)
+            )
+            plt.show()
+            plt.pause(0.1)
+            """
+            print("\n=== Statistical Comparison (Pre vs Post) ===")
+            stat_fig, clusters = cluster_based_comparison(
+                p300_pre, p300_post, time_ms, 25, n_permutations=1000
+            )
+            plt.show()  # <-- Change this
+            plt.pause(0.1)"""
 
         elif comparison == 1:
             pz_pre_target = np.mean(p300_pre[:, pz, :], axis=1)
@@ -511,7 +785,7 @@ def run_analysis(
                 color="green",
                 alpha=0.2,
             )
-            plt.title("P300 Analysis Comparison at Pz")
+            plt.title("P300 Analysis Comparison at FSz")
             plt.xlabel("Time (ms)")
             plt.ylabel("Amplitude (µV)")
             plt.legend()
@@ -669,7 +943,7 @@ def run_analysis(
                 color="green",
             )
 
-            ax1.set_title("ERP at Pz: Pre vs Post vs Online day 1")
+            ax1.set_title("ERP at Fz: Pre vs Post vs Online day 1")
             ax1.set_xlabel("Time (ms)")
             ax1.set_ylabel("Amplitude (µV)")
             ax1.axvline(0, linestyle="--", linewidth=1)
@@ -702,7 +976,7 @@ def run_analysis(
             ax2.axvspan(250, 400, alpha=0.1, label="FAST window (250–400 ms)")
             ax2.axvspan(420, 620, alpha=0.1, label="SLOW window (420–620 ms)")
 
-            ax2.set_title("Online day 1 ERP at Pz: FAST vs SLOW clusters")
+            ax2.set_title("Online day 1 ERP at Fz: FAST vs SLOW clusters")
             ax2.set_xlabel("Time (ms)")
             ax2.set_ylabel("Amplitude (µV)")
             ax2.axvline(0, linestyle="--", linewidth=1)
@@ -739,7 +1013,7 @@ def run_analysis(
 
             print("\n--- ONLINE: latency clustering at Pz ---")
             res_on = cluster_latency_and_plot(
-                time_ms, X_on, title="Online ERP at Pz: FAST vs SLOW clusters"
+                time_ms, X_on, title="Online ERP at Fz: FAST vs SLOW clusters"
             )
             print(
                 f"ONLINE jitter SD: {res_on['jitter_sd']:.2f} ms | centers: {np.array(res_on['centers_ms'])}"
@@ -747,16 +1021,76 @@ def run_analysis(
             print("  Cluster 0 metrics:", p3_metrics(time_ms, res_on["erp0"]))
             print("  Cluster 1 metrics:", p3_metrics(time_ms, res_on["erp1"]))
 
+            # Time-frequency
+            print("\n=== Time-Frequency Analysis PRE===")
+            tf_fig, _, _ = time_frequency_analysis(p300_pre, fs=512, channel_idx=pz)
+            plt.show()
+
+            print("\n=== Time-Frequency Analysis POST===")
+            tf_fig, _, _ = time_frequency_analysis(p300_post, fs=512, channel_idx=pz)
+            plt.show()
+
+            print("\n=== Time-Frequency Analysis ONLINE===")
+            tf_fig, _, _ = time_frequency_analysis(p300_online, fs=512, channel_idx=pz)
+            plt.show()
+
+            # Difference waves
+            print("\n=== Difference Wave Analysis  -- Pre vs Post ===")
+            diff_fig = difference_wave_analysis(
+                p300_pre,
+                p300_post,
+                time_ms,
+                channels_to_plot=[25, 6, cz],
+                labels=labels,
+            )
+            plt.show()  # <-- Change this
+            plt.pause(0.1)
+
+            print("\n=== Difference Wave Analysis -- Pre vs Online ===")
+            diff_fig = difference_wave_analysis(
+                p300_pre,
+                p300_online,
+                time_ms,
+                channels_to_plot=[25, 6, cz],
+                labels=labels,
+            )
+            plt.show()  # <-- Change this
+            plt.pause(0.1)
+
+            # Latency distribution
+            print("\n=== Latency Distribution Analysis Pre ===")
+            lat_fig, lat_stats = latency_distribution_analysis(
+                p300_pre, time_ms, 25, window=(250, 600)
+            )
+            plt.show()
+            plt.pause(0.1)
+
+            # Latency distribution
+            print("\n=== Latency Distribution Analysis Post ===")
+            lat_fig, lat_stats = latency_distribution_analysis(
+                p300_post, time_ms, 25, window=(250, 600)
+            )
+            plt.show()
+            plt.pause(0.1)
+
+            # Latency distribution
+            print("\n=== Latency Distribution Analysis Online ===")
+            lat_fig, lat_stats = latency_distribution_analysis(
+                p300_online, time_ms, 25, window=(250, 600)
+            )
+            plt.show()
+            plt.pause(0.1)
+
     elif c == 3:  # === Target vs Non-Target (Pre and Post) ===
         if comparison == None:
             for label, targ, nontarg in zip(
                 ["Pre", "Post"], [p300_pre, p300_post], [nop300_pre, nop300_post]
             ):
                 target = np.mean(targ[:, pz, :], axis=1)
-                nontarget = np.mean(nontarg[:, pz, :], axis=1)
+                nontarget = np.mean(nontarg[:, nt, :], axis=1)
 
                 std_target = np.std(targ[:, pz, :], axis=1) / np.sqrt(targ.shape[2])
-                std_nontarget = np.std(nontarg[:, pz, :], axis=1) / np.sqrt(
+                std_nontarget = np.std(nontarg[:, nt, :], axis=1) / np.sqrt(
                     nontarg.shape[2]
                 )
 
@@ -802,10 +1136,10 @@ def run_analysis(
                 [nop300_pre, nop300_post, nop300_online],
             ):
                 target = np.mean(targ[:, pz, :], axis=1)
-                nontarget = np.mean(nontarg[:, pz, :], axis=1)
+                nontarget = np.mean(nontarg[:, nt, :], axis=1)
 
                 std_target = np.std(targ[:, pz, :], axis=1) / np.sqrt(targ.shape[2])
-                std_nontarget = np.std(nontarg[:, pz, :], axis=1) / np.sqrt(
+                std_nontarget = np.std(nontarg[:, nt, :], axis=1) / np.sqrt(
                     nontarg.shape[2]
                 )
 

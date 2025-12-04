@@ -118,5 +118,36 @@ def p3_metrics(t_ms, erp, p3_window=(150,600), baseline_window=(-10,0), area_mod
     "lobe": "p3" is marker == "p3" else "n1",
   }
 
+def n1_p3_ptpA(t, erp, n1_w=(100,250), p3_w=(150,600)):
+  """
+  Get the peak-to-peak amplitude of N1-P300 (uV).
+  """
+  t = np.asarray(t)
+  x = np.asarray(erp)
+  n1 = np.min(x[(t>= n1_w[0]) & (t <= n1_w[1]))
+  p3 = np.max(x[(t >= p3_w[0]) & (t <= p3_w[1]))
+  return float(p3 - n1)
 
+def single_trial_latency_jitter(t, X, p3_window=(250,600)):
+  """
+  Compute single-trial latency jitter (SD in ms) and all per-trial latencies.
+  Important metric since P300 amplitude may decrease when latency jitters increase even if single trial has strong P300 !!
+  When jitters increases, CoM shifts later, FWHM increases and area decreases or is more spread out.
+
+  Inputs : 
+  - t : array of time points (n_times, )
+  - X : array of data (n_trials, n_times)
+  """
+  t = np.asarray(t)
+  X = np.asarray(X)
+  w = (t >= p3_window[0]) & (t <= p3_window[1])
+  peaks = t[w][np.argmax(X[:,w], axis=1)]
+  return float(np.std(peaks)), peaks
   
+def sem(a, axis=0):
+  """
+  Standard Error
+  """
+  a = np.asarray(a)
+  ddof = 1 if a.shape[axis] > 1 else 0
+  return np.std(a, axis=axis, ddof=ddof) / np.sqrt(max(a.shape[axis], 1))

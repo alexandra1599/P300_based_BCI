@@ -11,6 +11,7 @@ from CPP_Analysis import (
     compare_cpp_slopes,
     comprehensive_cpp_report,
 )
+from sklearn.metrics import silhouette_score
 
 
 def p3_metrics(
@@ -145,6 +146,7 @@ def single_trial_latency_jitter(t_ms, X, p3_window=(300, 600)):
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
+from sourcelocal import run_source_localization_analysis
 
 
 def trials_time_from_tc_tr(data_tc_tr, ch_idx):
@@ -156,6 +158,796 @@ def sem(a, axis=0):
     a = np.asarray(a)
     ddof = 1 if a.shape[axis] > 1 else 0
     return np.std(a, axis=axis, ddof=ddof) / np.sqrt(max(a.shape[axis], 1))
+
+
+def temporal_cluster_analysis(features, run_labels, trial_indices, n_clusters=None):
+    """
+    Cluster P300 trials and analyze temporal evolution
+
+    Parameters:
+        features: (n_trials, n_features) - all P300 trial features
+        run_labels: (n_trials,) - which run each trial came from
+        trial_indices: (n_trials,) - sequential trial number within run
+        n_clusters: int or None - if None, finds optimal automatically
+
+    Returns:
+        cluster_labels: (n_trials,) cluster assignment
+        cluster_info: dict with detailed analysis
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import silhouette_score
+    from collections import Counter
+
+    # Standardize features (important for clustering!)
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+
+    # Find optimal clusters if not specified
+    if n_clusters is None:
+        print("\n=== Finding Optimal Number of Clusters ===")
+        inertias = []
+        silhouette_scores_list = []
+        K_range = range(2, 7)  # Test 2-6 clusters
+
+        for k in K_range:
+            kmeans_temp = KMeans(n_clusters=k, random_state=42, n_init=10)
+            labels_temp = kmeans_temp.fit_predict(features_scaled)
+
+            inertias.append(kmeans_temp.inertia_)
+            silhouette_scores_list.append(
+                silhouette_score(features_scaled, labels_temp)
+            )
+
+        # Plot elbow curve
+        fig_elbow, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+        # Elbow method
+        ax1.plot(list(K_range), inertias, "bo-", linewidth=2, markersize=8)
+        ax1.set_xlabel("Number of Clusters (k)", fontsize=12)
+        ax1.set_ylabel("Inertia", fontsize=12)
+        ax1.set_title("Elbow Method", fontsize=14, fontweight="bold")
+        ax1.grid(True, alpha=0.3)
+
+        # Silhouette score
+        ax2.plot(
+            list(K_range), silhouette_scores_list, "ro-", linewidth=2, markersize=8
+        )
+        ax2.set_xlabel("Number of Clusters (k)", fontsize=12)
+        ax2.set_ylabel("Silhouette Score", fontsize=12)
+        ax2.set_title(
+            "Silhouette Score (Higher = Better)", fontsize=14, fontweight="bold"
+        )
+        ax2.grid(True, alpha=0.3)
+        ax2.axhline(y=0.5, color="g", linestyle="--", alpha=0.5, label="Good threshold")
+        ax2.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+        # Find optimal k (highest silhouette score)
+        optimal_idx = np.argmax(silhouette_scores_list)
+        n_clusters = list(K_range)[optimal_idx]
+
+        print(f"\n{'='*60}")
+        print(f"OPTIMAL NUMBER OF CLUSTERS")
+        print(f"{'='*60}")
+        print(f"Recommended k: {n_clusters}")
+        print(f"Silhouette score: {silhouette_scores_list[optimal_idx]:.3f}")
+        print(f"\nAll scores:")
+        for k, inertia, sil in zip(K_range, inertias, silhouette_scores_list):
+            marker = " ← BEST" if k == n_clusters else ""
+            print(f"  k={k}: Inertia={inertia:.1f}, Silhouette={sil:.3f}{marker}")
+        print(f"{'='*60}\n")
+
+    # Perform clustering with optimal/specified k
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
+    cluster_labels = kmeans.fit_predict(features_scaled)
+
+    print(f"\n{'='*60}")
+    print(f"CLUSTERING RESULTS")
+    print(f"{'='*60}")
+    print(f"Total P300 trials: {len(features)}")
+    print(f"Number of clusters: {n_clusters}")
+    print(f"\nCluster sizes:")
+    for cluster_id in range(n_clusters):
+        count = np.sum(cluster_labels == cluster_id)
+        pct = 100 * count / len(features)
+        print(f"  Cluster {cluster_id}: {count} trials ({pct:.1f}%)")
+    print(f"{'='*60}\n")
+
+    # Analyze temporal distribution
+    unique_runs = np.unique(run_labels)
+    n_runs = len(unique_runs)
+
+    # Create temporal evolution matrix
+    cluster_by_run = np.zeros((n_runs, n_clusters))
+
+    for run_idx, run_num in enumerate(unique_runs):
+        run_mask = run_labels == run_num
+        run_clusters = cluster_labels[run_mask]
+
+        for cluster_id in range(n_clusters):
+            cluster_by_run[run_idx, cluster_id] = np.sum(run_clusters == cluster_id)
+
+    # Plot temporal evolution
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 1. Stacked bar chart - Cluster composition per run
+    ax1 = axes[0, 0]
+    bottom = np.zeros(n_runs)
+    colors = plt.cm.Set3(np.linspace(0, 1, n_clusters))
+
+    for cluster_id in range(n_clusters):
+        ax1.bar(
+            unique_runs,
+            cluster_by_run[:, cluster_id],
+            bottom=bottom,
+            label=f"Cluster {cluster_id}",
+            color=colors[cluster_id],
+            alpha=0.8,
+        )
+        bottom += cluster_by_run[:, cluster_id]
+
+    ax1.set_xlabel("Run Number", fontsize=12)
+    ax1.set_ylabel("Number of Trials", fontsize=12)
+    ax1.set_title("Cluster Composition by Run", fontsize=14, fontweight="bold")
+    ax1.legend(loc="upper right")
+    ax1.grid(True, alpha=0.3, axis="y")
+
+    # 2. Line plot - Cluster proportion over time
+    ax2 = axes[0, 1]
+    for cluster_id in range(n_clusters):
+        proportions = cluster_by_run[:, cluster_id] / cluster_by_run.sum(axis=1)
+        ax2.plot(
+            unique_runs,
+            proportions,
+            "o-",
+            linewidth=2,
+            markersize=8,
+            label=f"Cluster {cluster_id}",
+            color=colors[cluster_id],
+        )
+
+    ax2.set_xlabel("Run Number", fontsize=12)
+    ax2.set_ylabel("Proportion of Trials", fontsize=12)
+    ax2.set_title("Cluster Proportion Evolution", fontsize=14, fontweight="bold")
+    ax2.legend(loc="best")
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim([0, 1])
+
+    # 3. Heatmap - Cluster distribution across runs
+    ax3 = axes[1, 0]
+    im = ax3.imshow(
+        cluster_by_run.T, aspect="auto", cmap="YlOrRd", interpolation="nearest"
+    )
+    ax3.set_xlabel("Run Number", fontsize=12)
+    ax3.set_ylabel("Cluster ID", fontsize=12)
+    ax3.set_title("Cluster Heatmap (Counts)", fontsize=14, fontweight="bold")
+    ax3.set_xticks(range(n_runs))
+    ax3.set_xticklabels(unique_runs.astype(int))
+    ax3.set_yticks(range(n_clusters))
+    ax3.set_yticklabels([f"C{i}" for i in range(n_clusters)])
+    plt.colorbar(im, ax=ax3, label="Trial Count")
+
+    # 4. Cluster transitions - Do trials shift clusters over runs?
+    ax4 = axes[1, 1]
+
+    # Calculate "center of mass" for each cluster (average run number)
+    cluster_centroids_time = []
+    for cluster_id in range(n_clusters):
+        cluster_mask = cluster_labels == cluster_id
+        avg_run = np.mean(run_labels[cluster_mask])
+        cluster_centroids_time.append(avg_run)
+
+    ax4.bar(range(n_clusters), cluster_centroids_time, color=colors, alpha=0.8)
+    ax4.set_xlabel("Cluster ID", fontsize=12)
+    ax4.set_ylabel("Average Run Number", fontsize=12)
+    ax4.set_title("Temporal Center of Each Cluster", fontsize=14, fontweight="bold")
+    ax4.set_xticks(range(n_clusters))
+    ax4.set_xticklabels([f"C{i}" for i in range(n_clusters)])
+    ax4.grid(True, alpha=0.3, axis="y")
+    ax4.axhline(
+        y=np.mean(unique_runs),
+        color="r",
+        linestyle="--",
+        linewidth=2,
+        label="Overall average",
+    )
+    ax4.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+    # Statistical summary
+    print(f"\n{'='*60}")
+    print(f"TEMPORAL ANALYSIS")
+    print(f"{'='*60}")
+    for cluster_id in range(n_clusters):
+        cluster_mask = cluster_labels == cluster_id
+        cluster_runs = run_labels[cluster_mask]
+
+        print(f"\nCluster {cluster_id}:")
+        print(f"  Average run: {np.mean(cluster_runs):.2f}")
+        print(f"  Run range: {int(cluster_runs.min())}-{int(cluster_runs.max())}")
+        print(f"  Most common run: {Counter(cluster_runs).most_common(1)[0][0]}")
+
+        # Early vs late bias
+        early_runs = [1, 2, 3]
+        late_runs = [6, 7, 8]
+        early_count = np.sum(np.isin(cluster_runs, early_runs))
+        late_count = np.sum(np.isin(cluster_runs, late_runs))
+
+        if early_count > late_count * 1.5:
+            print(f"  → Early-run cluster (learning phase)")
+        elif late_count > early_count * 1.5:
+            print(f"  → Late-run cluster (expert phase)")
+        else:
+            print(f"  → Distributed across runs")
+
+    print(f"{'='*60}\n")
+
+    return cluster_labels, {
+        "n_clusters": n_clusters,
+        "cluster_by_run": cluster_by_run,
+        "unique_runs": unique_runs,
+        "kmeans": kmeans,
+        "scaler": scaler,
+    }
+
+
+def compare_all_three_conditions(
+    results_pre, results_post, results_online, save_dir=None
+):
+    """
+    Compare Pre vs Post vs Online clustering patterns
+    Creates comprehensive comparison plots showing learning and online performance
+    """
+
+    print("\n" + "=" * 70)
+    print("THREE-WAY COMPARISON: PRE vs POST vs ONLINE")
+    print("=" * 70)
+
+    # Check which conditions are available
+    conditions = {}
+    if results_pre is not None:
+        conditions["Pre"] = results_pre
+    if results_post is not None:
+        conditions["Post"] = results_post
+    if results_online is not None:
+        conditions["Online"] = results_online
+
+    if len(conditions) < 2:
+        print("⚠️ At least 2 conditions required for comparison")
+        return
+
+    # ============================================================
+    # CREATE 2x3 COMPARISON FIGURE
+    # ============================================================
+
+    fig = plt.figure(figsize=(18, 10))
+    gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
+
+    # Color scheme
+    colors_dict = {"Pre": "steelblue", "Post": "coral", "Online": "mediumseagreen"}
+
+    # ============================================================
+    # 1. OVERALL LATENCY COMPARISON (BOX PLOTS)
+    # ============================================================
+
+    ax1 = fig.add_subplot(gs[0, 0])
+
+    latency_data = []
+    condition_names = []
+    condition_colors = []
+
+    for cond_name, result in conditions.items():
+        latency_data.append(result["latencies_positive"])
+        condition_names.append(cond_name)
+        condition_colors.append(colors_dict[cond_name])
+
+    # Box plots
+    bp = ax1.boxplot(
+        latency_data,
+        labels=condition_names,
+        widths=0.5,
+        patch_artist=True,
+        showmeans=True,
+        meanprops=dict(marker="D", markerfacecolor="red", markersize=8),
+    )
+
+    # Color boxes
+    for patch, color in zip(bp["boxes"], condition_colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+
+    # Add individual points
+    for i, (lats, color) in enumerate(zip(latency_data, condition_colors)):
+        x = np.random.normal(i + 1, 0.04, size=len(lats))
+        ax1.scatter(x, lats, alpha=0.3, s=15, color=color)
+
+    ax1.set_ylabel("P300 Latency (ms)", fontsize=12)
+    ax1.set_title("Overall P300 Latency Comparison", fontsize=13, fontweight="bold")
+    ax1.grid(True, alpha=0.3, axis="y")
+
+    # Add statistics
+    means = [np.mean(lats) for lats in latency_data]
+    stds = [np.std(lats) for lats in latency_data]
+
+    stats_text = "\n".join(
+        [
+            f"{name}: {mean:.1f}±{std:.1f} ms"
+            for name, mean, std in zip(condition_names, means, stds)
+        ]
+    )
+    ax1.text(
+        0.02,
+        0.98,
+        stats_text,
+        transform=ax1.transAxes,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+        fontsize=9,
+    )
+
+    # ============================================================
+    # 2. CLUSTER DISTRIBUTION COMPARISON (STACKED BAR)
+    # ============================================================
+
+    ax2 = fig.add_subplot(gs[0, 1])
+
+    # Get max number of clusters across conditions
+    max_clusters = max([result["optimal_k"] for result in conditions.values()])
+
+    # Prepare data for stacked bar
+    cluster_props = {cond: [] for cond in condition_names}
+    cluster_labels_all = []
+
+    for cluster_num in range(max_clusters):
+        if cluster_num == 0:
+            cluster_labels_all.append("FAST")
+        elif cluster_num == max_clusters - 1:
+            cluster_labels_all.append("MEDIUM")
+        else:
+            cluster_labels_all.append("SLOW")
+
+        for cond_name, result in conditions.items():
+            clusters = result["cluster_labels"]
+            cluster_names = result["cluster_names"]
+
+            # Find which cluster ID corresponds to this position
+            sorted_ids = sorted(
+                set(clusters),
+                key=lambda x: result["latencies_positive"][clusters == x].mean(),
+            )
+
+            if cluster_num < len(sorted_ids):
+                cid = sorted_ids[cluster_num]
+                prop = 100 * np.sum(clusters == cid) / len(clusters)
+                cluster_props[cond_name].append(prop)
+            else:
+                cluster_props[cond_name].append(0)
+
+    # Create stacked bar
+    x = np.arange(len(condition_names))
+    width = 0.6
+    bottom = np.zeros(len(condition_names))
+
+    colors_clusters = plt.cm.RdYlBu_r(np.linspace(0, 1, max_clusters))
+
+    for cluster_idx, cluster_label in enumerate(cluster_labels_all):
+        heights = [cluster_props[cond][cluster_idx] for cond in condition_names]
+        ax2.bar(
+            x,
+            heights,
+            width,
+            bottom=bottom,
+            label=cluster_label,
+            color=colors_clusters[cluster_idx],
+            alpha=0.8,
+        )
+
+        # Add percentage labels
+        for i, (height, cond) in enumerate(zip(heights, condition_names)):
+            if height > 5:  # Only show if > 5%
+                ax2.text(
+                    i,
+                    bottom[i] + height / 2,
+                    f"{height:.0f}%",
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                    fontweight="bold",
+                )
+
+        bottom += heights
+
+    ax2.set_ylabel("Percentage of Trials (%)", fontsize=12)
+    ax2.set_title("Cluster Distribution", fontsize=13, fontweight="bold")
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(condition_names)
+    ax2.set_ylim([0, 100])
+    ax2.legend(loc="upper right")
+    ax2.grid(True, alpha=0.3, axis="y")
+
+    # ============================================================
+    # 3. AMPLITUDE COMPARISON
+    # ============================================================
+
+    ax3 = fig.add_subplot(gs[0, 2])
+
+    amplitude_data = []
+    for result in conditions.values():
+        amplitude_data.append(result["amplitudes_positive"])
+
+    # Box plots
+    bp_amp = ax3.boxplot(
+        amplitude_data,
+        labels=condition_names,
+        widths=0.5,
+        patch_artist=True,
+        showmeans=True,
+    )
+
+    # Color boxes
+    for patch, color in zip(bp_amp["boxes"], condition_colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+
+    # Add individual points
+    for i, (amps, color) in enumerate(zip(amplitude_data, condition_colors)):
+        x = np.random.normal(i + 1, 0.04, size=len(amps))
+        ax3.scatter(x, amps, alpha=0.3, s=15, color=color)
+
+    ax3.set_ylabel("P300 Amplitude (µV)", fontsize=12)
+    ax3.set_title("P300 Amplitude Comparison", fontsize=13, fontweight="bold")
+    ax3.grid(True, alpha=0.3, axis="y")
+
+    # ============================================================
+    # 4. LATENCY BY CLUSTER (GROUPED BAR CHART)
+    # ============================================================
+
+    ax4 = fig.add_subplot(gs[1, 0])
+
+    # Get latencies for each cluster type (FAST, MEDIUM, SLOW)
+    cluster_types = ["FAST", "MEDIUM", "SLOW"]
+
+    cluster_latencies = {ctype: [] for ctype in cluster_types}
+
+    for cond_name, result in conditions.items():
+        clusters = result["cluster_labels"]
+        lats = result["latencies_positive"]
+        cluster_names_dict = result["cluster_names"]
+
+        # Sort clusters by latency
+        sorted_ids = sorted(set(clusters), key=lambda x: lats[clusters == x].mean())
+
+        # Map to cluster types
+        for i, cid in enumerate(sorted_ids):
+            cluster_mask = clusters == cid
+            mean_lat = lats[cluster_mask].mean()
+
+            if i == 0:
+                cluster_latencies["FAST"].append(mean_lat)
+            elif i == len(sorted_ids) - 1:
+                cluster_latencies["SLOW"].append(mean_lat)
+            else:
+                cluster_latencies["MEDIUM"].append(mean_lat)
+
+        # Fill missing cluster types
+        if len(sorted_ids) == 2:
+            cluster_latencies["MEDIUM"].append(np.nan)
+
+    # Grouped bar chart
+    x = np.arange(len(cluster_types))
+    width = 0.25
+
+    for i, (cond_name, color) in enumerate(zip(condition_names, condition_colors)):
+        heights = [
+            cluster_latencies[ctype][i] if i < len(cluster_latencies[ctype]) else np.nan
+            for ctype in cluster_types
+        ]
+        offset = width * (i - len(condition_names) / 2 + 0.5)
+        ax4.bar(x + offset, heights, width, label=cond_name, color=color, alpha=0.7)
+
+    ax4.set_ylabel("Mean Latency (ms)", fontsize=12)
+    ax4.set_title("Mean Latency by Cluster Type", fontsize=13, fontweight="bold")
+    ax4.set_xticks(x)
+    ax4.set_xticklabels(cluster_types)
+    ax4.legend()
+    ax4.grid(True, alpha=0.3, axis="y")
+
+    # ============================================================
+    # 5. POSITIVE vs NEGATIVE P300 PROPORTION
+    # ============================================================
+
+    ax5 = fig.add_subplot(gs[1, 1])
+
+    positive_props = []
+    negative_props = []
+
+    for result in conditions.values():
+        pos_prop = 100 * result["n_positive"] / result["n_trials"]
+        neg_prop = 100 * result["n_negative"] / result["n_trials"]
+        positive_props.append(pos_prop)
+        negative_props.append(neg_prop)
+
+    x = np.arange(len(condition_names))
+    width = 0.6
+
+    bars1 = ax5.bar(
+        x, positive_props, width, label="Positive P300", color="lightgreen", alpha=0.7
+    )
+    bars2 = ax5.bar(
+        x,
+        negative_props,
+        width,
+        bottom=positive_props,
+        label="Negative/Artifact",
+        color="lightcoral",
+        alpha=0.7,
+    )
+
+    # Add labels
+    for i, (pos, neg) in enumerate(zip(positive_props, negative_props)):
+        ax5.text(
+            i,
+            pos / 2,
+            f"{pos:.0f}%",
+            ha="center",
+            va="center",
+            fontsize=11,
+            fontweight="bold",
+        )
+        ax5.text(
+            i,
+            pos + neg / 2,
+            f"{neg:.0f}%",
+            ha="center",
+            va="center",
+            fontsize=11,
+            fontweight="bold",
+        )
+
+    ax5.set_ylabel("Percentage of Trials (%)", fontsize=12)
+    ax5.set_title("Trial Quality Distribution", fontsize=13, fontweight="bold")
+    ax5.set_xticks(x)
+    ax5.set_xticklabels(condition_names)
+    ax5.set_ylim([0, 100])
+    ax5.legend()
+    ax5.grid(True, alpha=0.3, axis="y")
+
+    # ============================================================
+    # 6. STATISTICAL SUMMARY TABLE
+    # ============================================================
+
+    ax6 = fig.add_subplot(gs[1, 2])
+    ax6.axis("off")
+
+    # Create summary table
+    table_data = []
+    table_data.append(["Metric", "Pre", "Post", "Online"])
+
+    # Total trials
+    row = ["Total Trials"]
+    for cond_name in ["Pre", "Post", "Online"]:
+        if cond_name in conditions:
+            row.append(str(conditions[cond_name]["n_trials"]))
+        else:
+            row.append("-")
+    table_data.append(row)
+
+    # Positive P300s
+    row = ["Positive P300s"]
+    for cond_name in ["Pre", "Post", "Online"]:
+        if cond_name in conditions:
+            n_pos = conditions[cond_name]["n_positive"]
+            n_tot = conditions[cond_name]["n_trials"]
+            row.append(f"{n_pos} ({100*n_pos/n_tot:.0f}%)")
+        else:
+            row.append("-")
+    table_data.append(row)
+
+    # Mean latency
+    row = ["Mean Latency (ms)"]
+    for cond_name in ["Pre", "Post", "Online"]:
+        if cond_name in conditions:
+            lat = conditions[cond_name]["latencies_positive"].mean()
+            row.append(f"{lat:.1f}")
+        else:
+            row.append("-")
+    table_data.append(row)
+
+    # SD latency
+    row = ["SD Latency (ms)"]
+    for cond_name in ["Pre", "Post", "Online"]:
+        if cond_name in conditions:
+            lat_sd = conditions[cond_name]["latencies_positive"].std()
+            row.append(f"{lat_sd:.1f}")
+        else:
+            row.append("-")
+    table_data.append(row)
+
+    # Mean amplitude
+    row = ["Mean Amplitude (µV)"]
+    for cond_name in ["Pre", "Post", "Online"]:
+        if cond_name in conditions:
+            amp = conditions[cond_name]["amplitudes_positive"].mean()
+            row.append(f"{amp:.2f}")
+        else:
+            row.append("-")
+    table_data.append(row)
+
+    # Number of clusters
+    row = ["# Clusters"]
+    for cond_name in ["Pre", "Post", "Online"]:
+        if cond_name in conditions:
+            row.append(str(conditions[cond_name]["optimal_k"]))
+        else:
+            row.append("-")
+    table_data.append(row)
+
+    # Create table
+    table = ax6.table(
+        cellText=table_data, cellLoc="center", loc="center", bbox=[0, 0, 1, 1]
+    )
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2)
+
+    # Style header row
+    for i in range(4):
+        table[(0, i)].set_facecolor("#4472C4")
+        table[(0, i)].set_text_props(weight="bold", color="white")
+
+    # Style metric column
+    for i in range(1, len(table_data)):
+        table[(i, 0)].set_facecolor("#E7E6E6")
+        table[(i, 0)].set_text_props(weight="bold")
+
+    # Color condition columns
+    for i in range(1, len(table_data)):
+        if "Pre" in conditions:
+            table[(i, 1)].set_facecolor("#D6E4F5")
+        if "Post" in conditions:
+            table[(i, 2)].set_facecolor("#FCE4D6")
+        if "Online" in conditions:
+            table[(i, 3)].set_facecolor("#D5E8D4")
+
+    ax6.set_title("Summary Statistics", fontsize=13, fontweight="bold", pad=20)
+
+    # ============================================================
+    # SAVE FIGURE
+    # ============================================================
+
+    plt.suptitle(
+        "Pre vs Post vs Online: Comprehensive Comparison",
+        fontsize=17,
+        fontweight="bold",
+        y=0.98,
+    )
+
+    if save_dir:
+        fig_path = os.path.join(save_dir, "comparison_all_three_conditions.png")
+        fig.savefig(fig_path, dpi=300, bbox_inches="tight")
+        print(f"✅ Saved: {fig_path}")
+
+    plt.show()
+    plt.close(fig)
+
+    # ============================================================
+    # PRINT STATISTICAL COMPARISONS
+    # ============================================================
+
+    print(f"\n{'='*70}")
+    print("PAIRWISE STATISTICAL COMPARISONS")
+    print(f"{'='*70}")
+
+    from scipy.stats import ttest_ind
+
+    # All pairwise comparisons
+    pairs = [("Pre", "Post"), ("Pre", "Online"), ("Post", "Online")]
+
+    for cond1, cond2 in pairs:
+        if cond1 in conditions and cond2 in conditions:
+            print(f"\n{cond1} vs {cond2}:")
+
+            lats1 = conditions[cond1]["latencies_positive"]
+            lats2 = conditions[cond2]["latencies_positive"]
+
+            mean1 = lats1.mean()
+            mean2 = lats2.mean()
+            diff = mean1 - mean2
+
+            t_stat, p_val = ttest_ind(lats1, lats2)
+
+            print(f"  Latency:")
+            print(f"    {cond1}: {mean1:.1f} ms")
+            print(f"    {cond2}: {mean2:.1f} ms")
+            print(f"    Difference: {diff:+.1f} ms ({100*diff/mean1:+.1f}%)")
+            print(f"    t-test: t={t_stat:.3f}, p={p_val:.4f}")
+
+            if p_val < 0.001:
+                print(f"    Significance: *** (p < 0.001)")
+            elif p_val < 0.01:
+                print(f"    Significance: ** (p < 0.01)")
+            elif p_val < 0.05:
+                print(f"    Significance: * (p < 0.05)")
+            else:
+                print(f"    Significance: ns (not significant)")
+
+    print(f"\n{'='*70}")
+
+    # ============================================================
+    # LEARNING PROGRESSION SUMMARY
+    # ============================================================
+
+    if "Pre" in conditions and "Post" in conditions:
+        print(f"\n{'='*70}")
+        print("LEARNING EFFECT (PRE → POST)")
+        print(f"{'='*70}")
+
+        pre_fast = np.sum(
+            conditions["Pre"]["cluster_labels"]
+            == sorted(
+                set(conditions["Pre"]["cluster_labels"]),
+                key=lambda x: conditions["Pre"]["latencies_positive"][
+                    conditions["Pre"]["cluster_labels"] == x
+                ].mean(),
+            )[0]
+        )
+        pre_fast_pct = 100 * pre_fast / len(conditions["Pre"]["cluster_labels"])
+
+        post_fast = np.sum(
+            conditions["Post"]["cluster_labels"]
+            == sorted(
+                set(conditions["Post"]["cluster_labels"]),
+                key=lambda x: conditions["Post"]["latencies_positive"][
+                    conditions["Post"]["cluster_labels"] == x
+                ].mean(),
+            )[0]
+        )
+        post_fast_pct = 100 * post_fast / len(conditions["Post"]["cluster_labels"])
+
+        print(f"\nFAST cluster proportion:")
+        print(f"  Pre → Post: {pre_fast_pct:.1f}% → {post_fast_pct:.1f}%")
+        print(f"  Change: {post_fast_pct - pre_fast_pct:+.1f} percentage points")
+
+        if post_fast_pct > pre_fast_pct * 1.2:
+            print(f"  → ✓ FAST responses INCREASED with training")
+
+        # SLOW cluster
+        pre_slow = np.sum(
+            conditions["Pre"]["cluster_labels"]
+            == sorted(
+                set(conditions["Pre"]["cluster_labels"]),
+                key=lambda x: conditions["Pre"]["latencies_positive"][
+                    conditions["Pre"]["cluster_labels"] == x
+                ].mean(),
+            )[-1]
+        )
+        pre_slow_pct = 100 * pre_slow / len(conditions["Pre"]["cluster_labels"])
+
+        post_slow = np.sum(
+            conditions["Post"]["cluster_labels"]
+            == sorted(
+                set(conditions["Post"]["cluster_labels"]),
+                key=lambda x: conditions["Post"]["latencies_positive"][
+                    conditions["Post"]["cluster_labels"] == x
+                ].mean(),
+            )[-1]
+        )
+        post_slow_pct = 100 * post_slow / len(conditions["Post"]["cluster_labels"])
+
+        print(f"\nSLOW cluster proportion:")
+        print(f"  Pre → Post: {pre_slow_pct:.1f}% → {post_slow_pct:.1f}%")
+        print(f"  Change: {post_slow_pct - pre_slow_pct:+.1f} percentage points")
+
+        if post_slow_pct < pre_slow_pct * 0.5:
+            print(f"  → ✓ SLOW responses DECREASED with training")
+
+        print(f"\n{'='*70}")
 
 
 def cluster_latency_and_plot(
@@ -290,6 +1082,11 @@ from Visualize_ERP import (
     difference_wave_analysis,
     latency_distribution_analysis,
     cluster_based_comparison,
+    n200_p300_temporal_relationship,
+    hemispheric_lateralization_analysis,
+    analyze_n200_p300_correlation,
+    create_n200_p300_comparison_summary,
+    identify_early_components,
 )
 
 import os
@@ -322,7 +1119,7 @@ def run_analysis(
     elif session == "Relaxation":
         nt, fz, pz, cz, cpz, c1, c2 = 9, 6, 26, 15, 20, 20, 23
 
-    prompt = "CPP[1] or P300[2] or Target[3] analysis: "
+    prompt = "CPP[1] or P300[2] or Target[3] or Advanced[4] or Cluster[5/6] or Source[7] analysis: "
     c = int(input(prompt))
 
     time_ms = np.arange(p300_pre.shape[0]) * 1000 / fs
@@ -1177,3 +1974,1320 @@ def run_analysis(
                 plt.grid(True)
 
                 plt.show()
+
+    elif c == 4:
+        print("\n" + "=" * 70)
+        print("TARGETED ADVANCED ANALYSES")
+        print("=" * 70)
+
+        # Create output directory for targeted analyses
+        targeted_dir = os.path.join(output_dir, "targeted_analysis")
+        os.makedirs(targeted_dir, exist_ok=True)
+
+        # Get channel indices
+        if session == "tACS":
+            pz = 11
+        elif session == "Relaxation":
+            pz = 26
+
+        time_ms = np.arange(p300_pre.shape[0]) * 1000 / fs
+
+        # ===== 1. N200-P300 RELATIONSHIP =====
+        print("\n=== 1. N200-P300 Temporal Relationship ===")
+        try:
+            # Analyze for Pre condition
+            n2p3_pre_fig, n2p3_pre_stats = n200_p300_temporal_relationship(
+                p300_pre, time_ms, pz, n200_window=(150, 250), p300_window=(300, 600)
+            )
+
+            save_path = os.path.join(targeted_dir, "n200_p300_relationship_pre.png")
+            n2p3_pre_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+            print(f"✅ Pre N200-P300 analysis:")
+            print(
+                f"   N200 amp → P300 amp: r={n2p3_pre_stats['corr_amp']:.3f}, p={n2p3_pre_stats['p_amp']:.4f}"
+            )
+            print(
+                f"   N200 lat → P300 lat: r={n2p3_pre_stats['corr_lat']:.3f}, p={n2p3_pre_stats['p_lat']:.4f}"
+            )
+            print(
+                f"   Mean N200-P300 interval: {np.mean(n2p3_pre_stats['interval']):.1f} ms"
+            )
+
+            plt.close(n2p3_pre_fig)
+
+            # Analyze for Post condition
+            n2p3_post_fig, n2p3_post_stats = n200_p300_temporal_relationship(
+                p300_post, time_ms, pz, n200_window=(150, 250), p300_window=(300, 600)
+            )
+
+            save_path = os.path.join(targeted_dir, "n200_p300_relationship_post.png")
+            n2p3_post_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+            print(f"✅ Post N200-P300 analysis:")
+            print(
+                f"   N200 amp → P300 amp: r={n2p3_post_stats['corr_amp']:.3f}, p={n2p3_post_stats['p_amp']:.4f}"
+            )
+            print(
+                f"   N200 lat → P300 lat: r={n2p3_post_stats['corr_lat']:.3f}, p={n2p3_post_stats['p_lat']:.4f}"
+            )
+            print(
+                f"   Mean N200-P300 interval: {np.mean(n2p3_post_stats['interval']):.1f} ms"
+            )
+
+            plt.close(n2p3_post_fig)
+
+            # If online data available
+            if comparison == 1:
+                n2p3_online_fig, n2p3_online_stats = n200_p300_temporal_relationship(
+                    p300_online,
+                    time_ms,
+                    pz,
+                    n200_window=(150, 250),
+                    p300_window=(300, 600),
+                )
+
+                save_path = os.path.join(
+                    targeted_dir, "n200_p300_relationship_online.png"
+                )
+                n2p3_online_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+                print(f"✅ Online N200-P300 analysis:")
+                print(
+                    f"   N200 amp → P300 amp: r={n2p3_online_stats['corr_amp']:.3f}, p={n2p3_online_stats['p_amp']:.4f}"
+                )
+
+                plt.close(n2p3_online_fig)
+
+        except Exception as e:
+            print(f"❌ Error in N200-P300 analysis: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+        # ===== 2. HEMISPHERIC LATERALIZATION =====
+        print("\n=== 2. Hemispheric Lateralization Analysis ===")
+        try:
+            # Define left/right channels based on session
+            if session == "tACS":
+                # Adjust these based on your actual channel layout
+                left_channels = ["P3", "CP1", "C3"]
+                right_channels = ["P4", "CP2", "C4"]
+            elif session == "Relaxation":
+                left_channels = ["P3", "CP1", "C3"]
+                right_channels = ["P4", "CP2", "C4"]
+
+            # Pre condition
+            try:
+                lat_pre_fig, lat_pre_stats = hemispheric_lateralization_analysis(
+                    p300_pre,
+                    time_ms,
+                    labels,
+                    left_channels=left_channels,
+                    right_channels=right_channels,
+                )
+
+                save_path = os.path.join(targeted_dir, "lateralization_pre.png")
+                lat_pre_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+                print(f"✅ Pre lateralization:")
+                print(f"   Interpretation: {lat_pre_stats['interpretation']}")
+                print(f"   Mean LI: {lat_pre_stats['mean_li']:.3f}")
+                print(
+                    f"   Left vs Right: t={lat_pre_stats['t_stat']:.2f}, p={lat_pre_stats['p_value']:.4f}"
+                )
+
+                plt.close(lat_pre_fig)
+            except Exception as e:
+                print(f"⚠️ Pre lateralization failed: {e}")
+
+            # Post condition
+            try:
+                lat_post_fig, lat_post_stats = hemispheric_lateralization_analysis(
+                    p300_post,
+                    time_ms,
+                    labels,
+                    left_channels=left_channels,
+                    right_channels=right_channels,
+                )
+
+                save_path = os.path.join(targeted_dir, "lateralization_post.png")
+                lat_post_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+                print(f"✅ Post lateralization:")
+                print(f"   Interpretation: {lat_post_stats['interpretation']}")
+                print(f"   Mean LI: {lat_post_stats['mean_li']:.3f}")
+                print(
+                    f"   Left vs Right: t={lat_post_stats['t_stat']:.2f}, p={lat_post_stats['p_value']:.4f}"
+                )
+
+                plt.close(lat_post_fig)
+            except Exception as e:
+                print(f"⚠️ Post lateralization failed: {e}")
+
+            # Online condition (if available)
+            if comparison == 1:
+                try:
+                    lat_online_fig, lat_online_stats = (
+                        hemispheric_lateralization_analysis(
+                            p300_online,
+                            time_ms,
+                            labels,
+                            left_channels=left_channels,
+                            right_channels=right_channels,
+                        )
+                    )
+
+                    save_path = os.path.join(targeted_dir, "lateralization_online.png")
+                    lat_online_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+                    print(f"✅ Online lateralization:")
+                    print(f"   Interpretation: {lat_online_stats['interpretation']}")
+                    print(f"   Mean LI: {lat_online_stats['mean_li']:.3f}")
+
+                    plt.close(lat_online_fig)
+                except Exception as e:
+                    print(f"⚠️ Online lateralization failed: {e}")
+
+        except Exception as e:
+            print(f"❌ Error in lateralization analysis: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+        # ===== SUMMARY =====
+        print("\n" + "=" * 70)
+        print("TARGETED ANALYSIS SUMMARY")
+        print("=" * 70)
+
+        print("\n1. N200-P300 Relationship:")
+        if "n2p3_pre_stats" in locals() and "n2p3_post_stats" in locals():
+            pre_coupled = n2p3_pre_stats["p_amp"] < 0.05
+            post_coupled = n2p3_post_stats["p_amp"] < 0.05
+
+            print(
+                f"   Pre:  {'✓ Coupled' if pre_coupled else '✗ Not coupled'} (p={n2p3_pre_stats['p_amp']:.4f})"
+            )
+            print(
+                f"   Post: {'✓ Coupled' if post_coupled else '✗ Not coupled'} (p={n2p3_post_stats['p_amp']:.4f})"
+            )
+
+            if pre_coupled or post_coupled:
+                print(f"   → N200 amplitude predicts P300 amplitude")
+
+        print("\n2. Hemispheric Lateralization:")
+        if "lat_pre_stats" in locals():
+            print(f"   Pre:  {lat_pre_stats['interpretation']}")
+        if "lat_post_stats" in locals():
+            print(f"   Post: {lat_post_stats['interpretation']}")
+
+            if "lat_pre_stats" in locals() and "lat_post_stats" in locals():
+                # Check if lateralization changed
+                pre_left = lat_pre_stats["mean_li"] > 0.1
+                post_left = lat_post_stats["mean_li"] > 0.1
+                pre_right = lat_pre_stats["mean_li"] < -0.1
+                post_right = lat_post_stats["mean_li"] < -0.1
+
+                if pre_left != post_left or pre_right != post_right:
+                    print(f"   → Lateralization pattern CHANGED from Pre to Post")
+                else:
+                    print(f"   → Lateralization pattern STABLE from Pre to Post")
+
+        print(f"\n📁 All targeted analyses saved to: {targeted_dir}")
+        print("=" * 70)
+
+    elif c == 5:  # === TEMPORAL CLUSTERING ANALYSIS ===
+        print("\n" + "=" * 70)
+        print("TEMPORAL CLUSTERING ANALYSIS - LEARNING PROGRESSION")
+        print("=" * 70)
+
+        # Check if we have online data
+        if comparison != 1 or p300_online is None:
+            print("❌ This analysis requires online data")
+            return
+
+        n_online_trials = p300_online.shape[2]
+        print(f"\nTotal online P300 trials: {n_online_trials}")
+
+        trials_per_run = 10
+        expected_total = trials_per_run * 8
+
+        if n_online_trials != expected_total:
+            print(f"⚠️ Expected {expected_total} trials but found {n_online_trials}")
+            trials_per_run = int(
+                input(f"Trials per run? [default: {n_online_trials//8}]: ")
+                or n_online_trials // 8
+            )
+
+        online_run_labels = np.repeat(np.arange(1, 9), trials_per_run)
+
+        if len(online_run_labels) < n_online_trials:
+            remainder = n_online_trials - len(online_run_labels)
+            online_run_labels = np.concatenate(
+                [online_run_labels, np.full(remainder, 8)]
+            )
+
+        online_run_labels = online_run_labels[:n_online_trials]
+
+        print(f"\n✓ Assigned run labels:")
+        for run_num in range(1, 9):
+            count = np.sum(online_run_labels == run_num)
+            print(f"   Run {run_num}: {count} trials")
+
+        # ============================================================
+        # PREPARE WAVEFORM DATA FOR CLUSTERING
+        # ============================================================
+
+        print("\n=== Preparing Waveform Data for Clustering ===")
+
+        # Get Pz index
+        if session == "tACS":
+            pz_idx = 11
+        elif session == "Relaxation":
+            pz_idx = 26
+        else:
+            pz_idx = 11
+
+        # Option 1: Use single channel (Pz)
+        print(f"Using channel: {labels[pz_idx] if pz_idx < len(labels) else 'Pz'}")
+
+        # Extract waveforms at Pz: (trials, time)
+        waveforms_pz = p300_online[:, pz_idx, :].T  # Shape: (trials, time)
+
+        print(f"✓ Waveform data shape: {waveforms_pz.shape}")
+        print(
+            f"   ({waveforms_pz.shape[0]} trials × {waveforms_pz.shape[1]} timepoints)"
+        )
+
+        # Optional: Focus on P300 time window only (300-600ms)
+        p300_window_start = int(0.3 * fs)  # 300ms
+        p300_window_end = int(0.6 * fs)  # 600ms
+
+        waveforms_window = waveforms_pz[:, p300_window_start:p300_window_end]
+
+        print(f"✓ Using P300 window (300-600ms): {waveforms_window.shape[1]} samples")
+
+        # Use windowed waveforms as features
+        online_features = waveforms_window  # Shape: (trials, time_samples)
+        trial_indices = np.arange(n_online_trials)
+
+        # ============================================================
+        # ALTERNATIVE: Use Multiple Channels
+        # ============================================================
+
+        use_multi_channel = (
+            input("\nUse multiple channels? [y/n, default: n]: ").lower() == "y"
+        )
+
+        if use_multi_channel:
+            # Use central-parietal channels: Cz, CPz, Pz
+            if session == "Relaxation":
+                ch_indices = [15, 20, 26]  # Cz, CPz, Pz
+                ch_names = ["Cz", "CPz", "Pz"]
+            else:
+                ch_indices = [pz_idx]  # Just Pz if others not available
+                ch_names = [labels[pz_idx] if pz_idx < len(labels) else "Pz"]
+
+            print(f"Using channels: {ch_names}")
+
+            # Extract waveforms from multiple channels
+            multi_ch_waveforms = []
+            for ch_idx in ch_indices:
+                ch_waveforms = p300_online[:, ch_idx, :].T  # (trials, time)
+                ch_window = ch_waveforms[:, p300_window_start:p300_window_end]
+                multi_ch_waveforms.append(ch_window)
+
+            # Concatenate channels: (trials, time*channels)
+            online_features = np.hstack(multi_ch_waveforms)
+            print(f"✓ Multi-channel features: {online_features.shape}")
+
+        # ============================================================
+        # TEMPORAL CLUSTERING ANALYSIS
+        # ============================================================
+
+        print("\n=== Performing Temporal Clustering on Waveforms ===")
+
+        cluster_labels, cluster_info = temporal_cluster_analysis(
+            features=online_features,  # Now using raw waveforms!
+            run_labels=online_run_labels,
+            trial_indices=trial_indices,
+            n_clusters=None,  # Auto-detect
+        )
+
+        # ============================================================
+        # VISUALIZE CLUSTER WAVEFORMS
+        # ============================================================
+
+        print("\n=== Analyzing Cluster Waveforms ===")
+
+        n_clusters = cluster_info["n_clusters"]
+        colors = plt.cm.Set3(np.linspace(0, 1, n_clusters))
+
+        fig_erp, ax_erp = plt.subplots(figsize=(10, 6))
+
+        for cluster_id in range(n_clusters):
+            cluster_mask = cluster_labels == cluster_id
+
+            # Get full waveforms for this cluster
+            cluster_trials = p300_online[:, pz_idx, cluster_mask]
+
+            # Compute ERP
+            cluster_erp = cluster_trials.mean(axis=1)
+            cluster_sem = cluster_trials.std(axis=1) / np.sqrt(cluster_trials.shape[1])
+
+            # Plot
+            ax_erp.plot(
+                time_ms,
+                cluster_erp,
+                label=f"Cluster {cluster_id} (n={np.sum(cluster_mask)})",
+                color=colors[cluster_id],
+                linewidth=2,
+            )
+            ax_erp.fill_between(
+                time_ms,
+                cluster_erp - cluster_sem,
+                cluster_erp + cluster_sem,
+                color=colors[cluster_id],
+                alpha=0.2,
+            )
+
+        ax_erp.axvline(0, color="k", linestyle="--", linewidth=1, alpha=0.5)
+        ax_erp.axvspan(300, 600, alpha=0.1, color="green", label="P300 window")
+        ax_erp.set_xlabel("Time (ms)", fontsize=12)
+        ax_erp.set_ylabel("Amplitude (µV)", fontsize=12)
+        ax_erp.set_title(
+            f'ERP by Cluster at {labels[pz_idx] if pz_idx < len(labels) else "Pz"}',
+            fontsize=14,
+            fontweight="bold",
+        )
+        ax_erp.legend()
+        ax_erp.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+
+        # ============================================================
+        # COMPUTE P300 METRICS PER CLUSTER
+        # ============================================================
+
+        print(f"\n{'='*60}")
+        print("P300 METRICS BY CLUSTER")
+        print(f"{'='*60}")
+
+        for cluster_id in range(n_clusters):
+            cluster_mask = cluster_labels == cluster_id
+            cluster_trials = p300_online[:, pz_idx, cluster_mask]
+            cluster_erp = cluster_trials.mean(axis=1)
+
+            # Compute P300 metrics
+            metrics = p3_metrics(time_ms, cluster_erp)
+
+            print(f"\nCluster {cluster_id} (n={np.sum(cluster_mask)}):")
+            print(f"  Peak amplitude: {metrics['peak_uv']:.2f} µV")
+            print(f"  Peak latency:   {metrics['latency_ms']:.1f} ms")
+            print(f"  FWHM:           {metrics['fwhm_ms']:.1f} ms")
+            print(f"  Area:           {metrics['area_uv_ms']:.1f} µV·ms")
+            print(f"  SNR:            {metrics['snr']:.2f}")
+
+        print(f"{'='*60}")
+
+        # ============================================================
+        # SAVE RESULTS
+        # ============================================================
+
+        cluster_dir = os.path.join(output_dir, "temporal_clustering")
+        os.makedirs(cluster_dir, exist_ok=True)
+
+        np.savez(
+            os.path.join(cluster_dir, f"clustering_waveforms_{ID}_{session}.npz"),
+            cluster_labels=cluster_labels,
+            run_labels=online_run_labels,
+            trial_indices=trial_indices,
+            waveforms=waveforms_pz,  # Save full waveforms
+            waveforms_windowed=waveforms_window,  # P300 window only
+            n_clusters=cluster_info["n_clusters"],
+            cluster_by_run=cluster_info["cluster_by_run"],
+            subject_id=ID,
+            session=session,
+            pz_idx=pz_idx,
+        )
+
+        print(f"\n✅ Results saved to: {cluster_dir}")
+
+        # ============================================================
+        # LEARNING PROGRESSION ANALYSIS
+        # ============================================================
+
+        print(f"\n{'='*70}")
+        print("LEARNING PROGRESSION SUMMARY")
+        print(f"{'='*70}")
+
+        cluster_avg_runs = []
+        for cluster_id in range(n_clusters):
+            cluster_mask = cluster_labels == cluster_id
+            avg_run = np.mean(online_run_labels[cluster_mask])
+            cluster_avg_runs.append(avg_run)
+
+        sorted_clusters = np.argsort(cluster_avg_runs)
+
+        print("\nClusters ordered by temporal progression:")
+        for idx, cluster_id in enumerate(sorted_clusters):
+            avg_run = cluster_avg_runs[cluster_id]
+            cluster_mask = cluster_labels == cluster_id
+
+            cluster_trials = p300_online[:, pz_idx, cluster_mask]
+            cluster_erp = cluster_trials.mean(axis=1)
+            metrics = p3_metrics(time_ms, cluster_erp)
+
+            if avg_run < 3:
+                phase = "EARLY (Learning)"
+            elif avg_run > 6:
+                phase = "LATE (Expert)"
+            else:
+                phase = "MIDDLE (Transition)"
+
+            print(f"\n{idx+1}. Cluster {cluster_id} - {phase}")
+            print(f"   Average run: {avg_run:.2f}")
+            print(f"   P300 amplitude: {metrics['peak_uv']:.2f} µV")
+            print(f"   P300 latency: {metrics['latency_ms']:.1f} ms")
+
+        # Learning effect
+        early_cluster = sorted_clusters[0]
+        late_cluster = sorted_clusters[-1]
+
+        early_trials = p300_online[:, pz_idx, cluster_labels == early_cluster]
+        late_trials = p300_online[:, pz_idx, cluster_labels == late_cluster]
+
+        early_metrics = p3_metrics(time_ms, early_trials.mean(axis=1))
+        late_metrics = p3_metrics(time_ms, late_trials.mean(axis=1))
+
+        print(f"\n{'='*70}")
+        print("LEARNING EFFECT (Early vs Late):")
+        print(f"{'='*70}")
+        print(
+            f"Amplitude: {early_metrics['peak_uv']:.2f} → {late_metrics['peak_uv']:.2f} µV"
+        )
+        print(f"  Δ = {late_metrics['peak_uv'] - early_metrics['peak_uv']:+.2f} µV")
+        print(
+            f"Latency: {early_metrics['latency_ms']:.1f} → {late_metrics['latency_ms']:.1f} ms"
+        )
+        print(
+            f"  Δ = {late_metrics['latency_ms'] - early_metrics['latency_ms']:+.1f} ms"
+        )
+
+        if late_metrics["peak_uv"] > early_metrics["peak_uv"] * 1.1:
+            print("\n✓ P300 amplitude INCREASED with learning!")
+        elif late_metrics["peak_uv"] < early_metrics["peak_uv"] * 0.9:
+            print("\n⚠️ P300 amplitude DECREASED")
+        else:
+            print("\n→ P300 amplitude stable")
+
+        print(f"{'='*70}")
+        print("✅ TEMPORAL CLUSTERING COMPLETE")
+        print(f"{'='*70}")
+
+    elif c == 6:  # === LATENCY-BASED CLUSTERING ===
+
+        print("\n" + "=" * 70)
+        print("LATENCY-BASED CLUSTERING ANALYSIS")
+        print("=" * 70)
+
+        # ============================================================
+        # SELECT CONDITION
+        # ============================================================
+
+        print("\nSelect condition to analyze:")
+        print("  [1] Pre (offline)")
+        print("  [2] Post (offline)")
+        print("  [3] Online (across runs)")
+        print("  [4] Compare all three")
+
+        condition_choice = int(input("Choice: "))
+
+        # Map choices to data
+        condition_map = {
+            1: ("Pre", p300_pre, None),
+            2: ("Post", p300_post, None),
+            3: ("Online", p300_online, "runs"),
+            4: ("All", None, "compare"),
+        }
+
+        if condition_choice not in condition_map:
+            print("❌ Invalid choice")
+            return
+
+        condition_name, p300_data, special = condition_map[condition_choice]
+
+        # Create output directory
+        latency_dir = os.path.join(output_dir, "latency_clustering")
+        os.makedirs(latency_dir, exist_ok=True)
+
+        # ============================================================
+        # GET PZ INDEX
+        # ============================================================
+
+        if session == "tACS":
+            pz_idx = 11
+        elif session == "Relaxation":
+            pz_idx = 26
+        else:
+            pz_idx = 11
+
+        pz_name = labels[pz_idx] if pz_idx < len(labels) else "Pz"
+
+        # ============================================================
+        # DEFINE CLUSTERING FUNCTION
+        # ============================================================
+
+        def cluster_by_latency(
+            p300_data, time_ms, pz_idx, condition_name, run_labels=None, save_dir=None
+        ):
+            """
+            Cluster trials by P300 latency
+
+            Returns: dict with results
+            """
+            from sklearn.cluster import KMeans
+            from sklearn.metrics import silhouette_score
+            from scipy.stats import linregress
+
+            # Get trials × time at Pz
+            X_pz = p300_data[:, pz_idx, :].T  # (trials, time)
+            n_trials = X_pz.shape[0]
+
+            print(f"\n{'='*60}")
+            print(f"ANALYZING: {condition_name}")
+            print(f"{'='*60}")
+            print(f"Total trials: {n_trials}")
+
+            # Define windows
+            p300_window = (time_ms >= 300) & (time_ms <= 600)
+            n200_window = (time_ms >= 150) & (time_ms <= 250)
+
+            # Extract latencies and amplitudes
+            per_trial_latencies = []
+            per_trial_amplitudes = []
+            per_trial_is_positive = []
+
+            for trial_idx in range(n_trials):
+                trial_waveform = X_pz[trial_idx, :]
+                trial_p300_window = trial_waveform[p300_window]
+
+                # Check polarity (mean in window)
+                mean_in_window = trial_p300_window.mean()
+
+                if mean_in_window > 0:
+                    # Positive P300: find max
+                    peak_idx = np.argmax(trial_p300_window)
+                    peak_amplitude = trial_p300_window[peak_idx]
+                    is_positive = True
+                else:
+                    # Negative/absent: find min
+                    peak_idx = np.argmin(trial_p300_window)
+                    peak_amplitude = trial_p300_window[peak_idx]
+                    is_positive = False
+
+                peak_latency = time_ms[p300_window][peak_idx]
+
+                per_trial_latencies.append(peak_latency)
+                per_trial_amplitudes.append(peak_amplitude)
+                per_trial_is_positive.append(is_positive)
+
+            per_trial_latencies = np.array(per_trial_latencies)
+            per_trial_amplitudes = np.array(per_trial_amplitudes)
+            per_trial_is_positive = np.array(per_trial_is_positive)
+
+            # Report polarity
+            n_positive = np.sum(per_trial_is_positive)
+            n_negative = n_trials - n_positive
+
+            print(f"\n✓ Extracted {n_trials} trials:")
+            print(f"   Positive P300: {n_positive} ({100*n_positive/n_trials:.0f}%)")
+            print(
+                f"   Negative/artifact: {n_negative} ({100*n_negative/n_trials:.0f}%)"
+            )
+
+            if n_positive > 0:
+                pos_lats = per_trial_latencies[per_trial_is_positive]
+                print(
+                    f"   Mean latency (positive only): {pos_lats.mean():.1f} ± {pos_lats.std():.1f} ms"
+                )
+
+            # Filter to positive trials only for clustering
+            if n_positive < 10:
+                print(f"\n⚠️ Only {n_positive} positive P300s - too few for clustering")
+                return None
+
+            print(f"\n=== Clustering {n_positive} Positive P300 Trials ===")
+
+            positive_mask = per_trial_is_positive
+            latencies_positive = per_trial_latencies[positive_mask]
+            amplitudes_positive = per_trial_amplitudes[positive_mask]
+
+            if run_labels is not None:
+                run_labels_positive = run_labels[positive_mask]
+            else:
+                run_labels_positive = None
+
+            # Cluster by latency
+            latencies_for_clustering = latencies_positive.reshape(-1, 1)
+
+            # Find optimal k (2-4 clusters)
+            silhouette_scores = []
+            K_range = range(2, min(5, n_positive // 5))
+
+            for k in K_range:
+                kmeans_temp = KMeans(n_clusters=k, random_state=42, n_init=20)
+                labels_temp = kmeans_temp.fit_predict(latencies_for_clustering)
+                sil = silhouette_score(latencies_for_clustering, labels_temp)
+                silhouette_scores.append(sil)
+
+            optimal_k = list(K_range)[np.argmax(silhouette_scores)]
+
+            print(f"Optimal k: {optimal_k} (silhouette: {max(silhouette_scores):.3f})")
+
+            # Cluster with optimal k
+            kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=20)
+            cluster_labels_positive = kmeans.fit_predict(latencies_for_clustering)
+
+            # Get cluster centers and sort
+            cluster_centers = kmeans.cluster_centers_.flatten()
+            sorted_cluster_ids = np.argsort(cluster_centers)
+
+            # Name clusters
+            cluster_names = {}
+            if optimal_k == 2:
+                cluster_names = {
+                    sorted_cluster_ids[0]: "FAST",
+                    sorted_cluster_ids[1]: "SLOW",
+                }
+            elif optimal_k == 3:
+                cluster_names = {
+                    sorted_cluster_ids[0]: "FAST",
+                    sorted_cluster_ids[1]: "MEDIUM",
+                    sorted_cluster_ids[2]: "SLOW",
+                }
+            else:
+                cluster_names = {i: f"C{i}" for i in range(optimal_k)}
+
+            # Print cluster info
+            print(f"\n{'='*60}")
+            print("LATENCY CLUSTERS (Positive P300s only)")
+            print(f"{'='*60}")
+
+            for cluster_id in sorted_cluster_ids:
+                cluster_mask_pos = cluster_labels_positive == cluster_id
+                cluster_lats = latencies_positive[cluster_mask_pos]
+                cluster_amps = amplitudes_positive[cluster_mask_pos]
+
+                print(f"\n{cluster_names[cluster_id]} Cluster (ID={cluster_id}):")
+                print(f"  N trials: {np.sum(cluster_mask_pos)}")
+                print(
+                    f"  Latency: {cluster_lats.mean():.1f} ± {cluster_lats.std():.1f} ms"
+                )
+                print(
+                    f"  Range: {cluster_lats.min():.1f} - {cluster_lats.max():.1f} ms"
+                )
+                print(
+                    f"  Amplitude: {cluster_amps.mean():.2f} ± {cluster_amps.std():.2f} µV"
+                )
+
+            print(f"{'='*60}")
+
+            # ============================================================
+            # PLOT 1: ERP BY CLUSTER
+            # ============================================================
+
+            fig_erp, ax_erp = plt.subplots(figsize=(12, 6))
+
+            colors = plt.cm.RdYlBu_r(np.linspace(0, 1, optimal_k))
+
+            # Map back to full trial space
+            positive_indices = np.where(positive_mask)[0]
+
+            for cluster_id in sorted_cluster_ids:
+                cluster_mask_pos = cluster_labels_positive == cluster_id
+
+                # Get full trial indices for this cluster
+                full_trial_indices = positive_indices[cluster_mask_pos]
+
+                # Get trials from original data
+                cluster_trials = X_pz[full_trial_indices, :]
+
+                cluster_erp = cluster_trials.mean(axis=0)
+                cluster_sem = cluster_trials.std(axis=0) / np.sqrt(
+                    len(full_trial_indices)
+                )
+
+                # Get latency window for shading
+                cluster_lats = latencies_positive[cluster_mask_pos]
+                lat_mean = cluster_lats.mean()
+                lat_std = cluster_lats.std()
+                window = (lat_mean - lat_std, lat_mean + lat_std)
+
+                ax_erp.plot(
+                    time_ms,
+                    cluster_erp,
+                    linewidth=2.5,
+                    label=f"{cluster_names[cluster_id]} (n={np.sum(cluster_mask_pos)})",
+                    color=colors[cluster_id],
+                )
+                ax_erp.fill_between(
+                    time_ms,
+                    cluster_erp - cluster_sem,
+                    cluster_erp + cluster_sem,
+                    color=colors[cluster_id],
+                    alpha=0.2,
+                )
+
+                # Shade latency window
+                ax_erp.axvspan(
+                    window[0], window[1], alpha=0.08, color=colors[cluster_id]
+                )
+
+            ax_erp.axvline(0, color="k", linestyle="--", linewidth=1, alpha=0.5)
+            ax_erp.axhline(0, color="k", linestyle="-", linewidth=0.5, alpha=0.3)
+            ax_erp.set_xlabel("Time (ms)", fontsize=13)
+            ax_erp.set_ylabel("Amplitude (µV)", fontsize=13)
+            ax_erp.set_title(
+                f"{condition_name} ERP at {pz_name}: Latency Clusters",
+                fontsize=15,
+                fontweight="bold",
+            )
+            ax_erp.legend(fontsize=11)
+            ax_erp.grid(True, alpha=0.3)
+            plt.tight_layout()
+
+            if save_dir:
+                fig_path = os.path.join(
+                    save_dir, f"erp_latency_clusters_{condition_name.lower()}.png"
+                )
+                fig_erp.savefig(fig_path, dpi=300, bbox_inches="tight")
+                print(f"✅ Saved: {fig_path}")
+
+            plt.show()
+            plt.close(fig_erp)
+
+            # ============================================================
+            # COMPUTE N200 METRICS PER CLUSTER
+            # ============================================================
+
+            print(f"\n{'='*60}")
+            print("N200 AND P300 METRICS BY CLUSTER")
+            print(f"{'='*60}")
+
+            cluster_metrics = {}
+
+            for cluster_id in sorted_cluster_ids:
+                cluster_mask_pos = cluster_labels_positive == cluster_id
+                full_trial_indices = positive_indices[cluster_mask_pos]
+                cluster_trials = X_pz[full_trial_indices, :]
+                cluster_erp = cluster_trials.mean(axis=0)
+
+                # N200
+                n200_amp = cluster_erp[n200_window].min()
+                n200_lat = time_ms[n200_window][np.argmin(cluster_erp[n200_window])]
+
+                # P300
+                p300_metrics = p3_metrics(time_ms, cluster_erp)
+
+                # Peak-to-peak
+                n2p3_ptp = p300_metrics["peak_uv"] - n200_amp
+
+                cluster_metrics[cluster_id] = {
+                    "n200_amp": n200_amp,
+                    "n200_lat": n200_lat,
+                    "p300_amp": p300_metrics["peak_uv"],
+                    "p300_lat": p300_metrics["latency_ms"],
+                    "n2p3_ptp": n2p3_ptp,
+                }
+
+                print(f"\n{cluster_names[cluster_id]} (n={np.sum(cluster_mask_pos)}):")
+                print(f"  N200: {n200_amp:.2f} µV at {n200_lat:.0f} ms")
+                print(
+                    f"  P300: {p300_metrics['peak_uv']:.2f} µV at {p300_metrics['latency_ms']:.0f} ms"
+                )
+                print(f"  N2-P3 p2p: {n2p3_ptp:.2f} µV")
+
+            print(f"{'='*60}")
+
+            # ============================================================
+            # TEMPORAL EVOLUTION (if run labels provided)
+            # ============================================================
+
+            if run_labels_positive is not None:
+                print("\n=== Temporal Evolution Across Runs ===")
+
+                # Create evolution plots
+                fig_evo, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+                unique_runs = np.unique(run_labels_positive)
+                n_runs = len(unique_runs)
+
+                # 1. Stacked bar
+                ax1 = axes[0, 0]
+
+                cluster_by_run = np.zeros((n_runs, optimal_k))
+                for run_idx, run_num in enumerate(unique_runs):
+                    run_mask = run_labels_positive == run_num
+                    for cluster_id in range(optimal_k):
+                        cluster_by_run[run_idx, cluster_id] = np.sum(
+                            (cluster_labels_positive == cluster_id) & run_mask
+                        )
+
+                bottom = np.zeros(n_runs)
+                for cluster_id in sorted_cluster_ids:
+                    ax1.bar(
+                        unique_runs,
+                        cluster_by_run[:, cluster_id],
+                        bottom=bottom,
+                        label=cluster_names[cluster_id],
+                        color=colors[cluster_id],
+                        alpha=0.8,
+                    )
+                    bottom += cluster_by_run[:, cluster_id]
+
+                ax1.set_xlabel("Run Number", fontsize=12)
+                ax1.set_ylabel("Number of Trials (Positive P300s)", fontsize=12)
+                ax1.set_title(
+                    "Latency Cluster Composition by Run", fontsize=14, fontweight="bold"
+                )
+                ax1.legend()
+                ax1.grid(True, alpha=0.3, axis="y")
+
+                # 2. Mean latency per run
+                ax2 = axes[0, 1]
+
+                mean_lat_per_run = []
+                std_lat_per_run = []
+
+                for run_num in unique_runs:
+                    run_mask = run_labels_positive == run_num
+                    run_lats = latencies_positive[run_mask]
+                    mean_lat_per_run.append(run_lats.mean())
+                    std_lat_per_run.append(run_lats.std())
+
+                mean_lat_per_run = np.array(mean_lat_per_run)
+                std_lat_per_run = np.array(std_lat_per_run)
+
+                ax2.plot(unique_runs, mean_lat_per_run, "o-", linewidth=2, markersize=8)
+                ax2.fill_between(
+                    unique_runs,
+                    mean_lat_per_run - std_lat_per_run,
+                    mean_lat_per_run + std_lat_per_run,
+                    alpha=0.3,
+                )
+
+                # Trend line
+                from scipy.stats import linregress
+
+                slope, intercept, r_value, p_value, std_err = linregress(
+                    unique_runs, mean_lat_per_run
+                )
+                trend_line = slope * unique_runs + intercept
+                ax2.plot(
+                    unique_runs,
+                    trend_line,
+                    "--",
+                    color="red",
+                    alpha=0.6,
+                    label=f"Trend: {slope:.1f} ms/run\n(r={r_value:.2f}, p={p_value:.3f})",
+                )
+
+                ax2.set_xlabel("Run Number", fontsize=12)
+                ax2.set_ylabel("Mean P300 Latency (ms)", fontsize=12)
+                ax2.set_title("P300 Latency Evolution", fontsize=14, fontweight="bold")
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+
+                # 3. Heatmap
+                ax3 = axes[1, 0]
+
+                im = ax3.imshow(
+                    cluster_by_run.T,
+                    aspect="auto",
+                    cmap="YlOrRd",
+                    interpolation="nearest",
+                )
+                ax3.set_xlabel("Run Number", fontsize=12)
+                ax3.set_ylabel("Cluster", fontsize=12)
+                ax3.set_title(
+                    "Cluster Distribution Heatmap", fontsize=14, fontweight="bold"
+                )
+                ax3.set_xticks(range(n_runs))
+                ax3.set_xticklabels(unique_runs.astype(int))
+                ax3.set_yticks(range(optimal_k))
+                ax3.set_yticklabels([cluster_names[i] for i in range(optimal_k)])
+                plt.colorbar(im, ax=ax3, label="Trial Count")
+
+                # 4. Proportion evolution
+                ax4 = axes[1, 1]
+
+                for cluster_id in sorted_cluster_ids:
+                    proportions = cluster_by_run[:, cluster_id] / cluster_by_run.sum(
+                        axis=1
+                    )
+                    ax4.plot(
+                        unique_runs,
+                        proportions,
+                        "o-",
+                        linewidth=2,
+                        markersize=8,
+                        label=cluster_names[cluster_id],
+                        color=colors[cluster_id],
+                    )
+
+                ax4.set_xlabel("Run Number", fontsize=12)
+                ax4.set_ylabel("Proportion of Trials", fontsize=12)
+                ax4.set_title(
+                    "Cluster Proportion Evolution", fontsize=14, fontweight="bold"
+                )
+                ax4.set_ylim([0, 1])
+                ax4.legend()
+                ax4.grid(True, alpha=0.3)
+
+                plt.tight_layout()
+
+                if save_dir:
+                    fig_path = os.path.join(
+                        save_dir, f"temporal_evolution_{condition_name.lower()}.png"
+                    )
+                    fig_evo.savefig(fig_path, dpi=300, bbox_inches="tight")
+                    print(f"✅ Saved: {fig_path}")
+
+                plt.show()
+                plt.close(fig_evo)
+
+                # Print summary
+                print(f"\n{'='*60}")
+                print("TEMPORAL EVOLUTION SUMMARY")
+                print(f"{'='*60}")
+
+                if p_value < 0.05:
+                    if slope < 0:
+                        print(
+                            f"✓ P300 latency DECREASED: {slope:.1f} ms/run (p={p_value:.3f})"
+                        )
+                    else:
+                        print(
+                            f"⚠️ P300 latency INCREASED: {slope:.1f} ms/run (p={p_value:.3f})"
+                        )
+                else:
+                    print(f"→ No significant latency trend (p={p_value:.3f})")
+
+                # Early vs late
+                early_runs = unique_runs[:3]
+                late_runs = unique_runs[-3:]
+
+                early_mask = np.isin(run_labels_positive, early_runs)
+                late_mask = np.isin(run_labels_positive, late_runs)
+
+                print(f"\nEarly runs ({early_runs[0]}-{early_runs[-1]}):")
+                for cluster_id in sorted_cluster_ids:
+                    count = np.sum((cluster_labels_positive == cluster_id) & early_mask)
+                    pct = 100 * count / np.sum(early_mask)
+                    print(f"  {cluster_names[cluster_id]}: {count} ({pct:.0f}%)")
+
+                print(f"\nLate runs ({late_runs[0]}-{late_runs[-1]}):")
+                for cluster_id in sorted_cluster_ids:
+                    count = np.sum((cluster_labels_positive == cluster_id) & late_mask)
+                    pct = 100 * count / np.sum(late_mask)
+                    print(f"  {cluster_names[cluster_id]}: {count} ({pct:.0f}%)")
+
+                print(f"{'='*60}")
+
+            # Return results
+            return {
+                "condition": condition_name,
+                "n_trials": n_trials,
+                "n_positive": n_positive,
+                "n_negative": n_negative,
+                "latencies_all": per_trial_latencies,
+                "amplitudes_all": per_trial_amplitudes,
+                "is_positive": per_trial_is_positive,
+                "latencies_positive": latencies_positive,
+                "amplitudes_positive": amplitudes_positive,
+                "cluster_labels": cluster_labels_positive,
+                "cluster_names": cluster_names,
+                "cluster_metrics": cluster_metrics,
+                "optimal_k": optimal_k,
+                "run_labels": (
+                    run_labels_positive if run_labels_positive is not None else None
+                ),
+            }
+
+        # ============================================================
+        # RUN ANALYSIS BASED ON CHOICE
+        # ============================================================
+
+        if condition_choice == 4:
+            # Compare all three
+            print("\n" + "=" * 70)
+            print("COMPARING PRE, POST, AND ONLINE")
+            print("=" * 70)
+
+            results = {}
+
+            # Pre
+            if p300_pre is not None:
+                results["pre"] = cluster_by_latency(
+                    p300_pre,
+                    time_ms,
+                    pz_idx,
+                    "Pre",
+                    run_labels=None,
+                    save_dir=latency_dir,
+                )
+
+            # Post
+            if p300_post is not None:
+                results["post"] = cluster_by_latency(
+                    p300_post,
+                    time_ms,
+                    pz_idx,
+                    "Post",
+                    run_labels=None,
+                    save_dir=latency_dir,
+                )
+
+            # Online
+            if comparison == 1 and p300_online is not None:
+                # Create run labels for online
+                n_online_trials = p300_online.shape[2]
+                trials_per_run = 10
+                online_run_labels = np.repeat(np.arange(1, 9), trials_per_run)
+                if len(online_run_labels) < n_online_trials:
+                    remainder = n_online_trials - len(online_run_labels)
+                    online_run_labels = np.concatenate(
+                        [online_run_labels, np.full(remainder, 8)]
+                    )
+                online_run_labels = online_run_labels[:n_online_trials]
+
+                results["online"] = cluster_by_latency(
+                    p300_online,
+                    time_ms,
+                    pz_idx,
+                    "Online",
+                    run_labels=online_run_labels,
+                    save_dir=latency_dir,
+                )
+
+            # Comparison summary
+            print("\n" + "=" * 70)
+            print("COMPARISON SUMMARY")
+            print("=" * 70)
+
+            for key in ["pre", "post", "online"]:
+                if key in results and results[key] is not None:
+                    res = results[key]
+                    print(f"\n{res['condition'].upper()}:")
+                    print(f"  Total trials: {res['n_trials']}")
+                    print(
+                        f"  Positive P300s: {res['n_positive']} ({100*res['n_positive']/res['n_trials']:.0f}%)"
+                    )
+                    if res["n_positive"] > 0:
+                        print(
+                            f"  Mean latency: {res['latencies_positive'].mean():.1f} ms"
+                        )
+
+                        print(f"  Clusters: {res['optimal_k']}")
+
+            print("=" * 70)
+
+            # ============================================================
+            # PRE vs POST DIRECT COMPARISON
+            # ============================================================
+
+            if "pre" in results and "post" in results and "online" in results:
+                # Three-way comparison (main analysis)
+                if (
+                    results["pre"] is not None
+                    and results["post"] is not None
+                    and results["online"] is not None
+                ):
+                    compare_all_three_conditions(
+                        results_pre=results["pre"],
+                        results_post=results["post"],
+                        results_online=results["online"],
+                        save_dir=latency_dir,
+                    )
+
+        else:
+            # Single condition
+            if special == "runs":
+                # Online with run labels
+                n_online_trials = p300_data.shape[2]
+                trials_per_run = 10
+                online_run_labels = np.repeat(np.arange(1, 9), trials_per_run)
+                if len(online_run_labels) < n_online_trials:
+                    remainder = n_online_trials - len(online_run_labels)
+                    online_run_labels = np.concatenate(
+                        [online_run_labels, np.full(remainder, 8)]
+                    )
+                online_run_labels = online_run_labels[:n_online_trials]
+
+                result = cluster_by_latency(
+                    p300_data,
+                    time_ms,
+                    pz_idx,
+                    condition_name,
+                    run_labels=online_run_labels,
+                    save_dir=latency_dir,
+                )
+            else:
+                # Pre or Post (no run labels)
+                result = cluster_by_latency(
+                    p300_data,
+                    time_ms,
+                    pz_idx,
+                    condition_name,
+                    run_labels=None,
+                    save_dir=latency_dir,
+                )
+
+        print("\n" + "=" * 70)
+        print("✅ LATENCY CLUSTERING ANALYSIS COMPLETE")
+        print(f"📁 Figures saved to: {latency_dir}")
+        print("=" * 70)
+
+    elif c == 7:  # === SOURCE LOCALIZATION ===
+        print("\n" + "=" * 70)
+        print("SOURCE LOCALIZATION ANALYSIS")
+        print("=" * 70)
+
+        # Check available data
+        available_data = {}
+        if p300_pre is not None:
+            available_data["Pre"] = p300_pre
+        if p300_post is not None:
+            available_data["Post"] = p300_post
+        if comparison == 1 and p300_online is not None:
+            available_data["Online"] = p300_online
+
+        if len(available_data) == 0:
+            print("❌ No P300 data available")
+            return
+
+        print(f"\nAvailable conditions: {list(available_data.keys())}")
+
+        # Create output directory
+        source_dir = os.path.join(output_dir, "source_localization")
+
+        # Path to your channel locations file
+        ch_pos_file = os.path.join(
+            "/home/alexandra-admin/Documents/PhD/Task Code/ch32Locations.mat"
+        )
+
+        # Check if file exists
+        if not os.path.exists(ch_pos_file):
+            print(f"⚠️ Channel positions file not found: {ch_pos_file}")
+            print("Please provide the correct path to ch32Locations.mat")
+            ch_pos_file = input(
+                "Enter path to ch32Locations.mat (or press Enter to use standard montage): "
+            ).strip()
+            if not ch_pos_file:
+                ch_pos_file = None
+
+        # Run source localization
+        all_components = run_source_localization_analysis(
+            p300_data_dict=available_data,
+            labels=labels,
+            time_ms=time_ms,
+            output_dir=source_dir,
+            sfreq=512,
+            ch_pos_file=ch_pos_file,
+        )
+
+    elif c == 8:
+        # ===== NEW: N200-P300 CORRELATION ANALYSIS =====
+        print("\n" + "=" * 70)
+        print("RUNNING N200-P300 CORRELATION ANALYSIS")
+        print("=" * 70)
+
+        # Analyze each condition
+        results = {}
+
+        # Pre condition
+        if p300_pre is not None:
+            time_ms = np.arange(p300_pre.shape[0]) * 1000 / fs
+
+            results["Pre"] = analyze_n200_p300_correlation(
+                erp_data=p300_pre,  # Shape: (trials, channels, timepoints)
+                channel_labels=labels,  # List of channel names
+                time_ms=time_ms,  # Time vector
+                condition_name="Pre",
+            )
+
+            components = identify_early_components(
+                erp_data=p300_pre,  # Shape: (512, 32, 54) = (time, ch, trials)
+                channel_labels=labels,
+                time_ms=time_ms,
+                condition_name="Online",
+                data_format="time_ch_trials",  # ← IMPORTANT: Specify this!
+            )
+
+            if results["Pre"] is not None:
+                plt.savefig(
+                    f"{output_dir}/n200_p300_correlation_pre.png",
+                    dpi=300,
+                    bbox_inches="tight",
+                )
+                plt.show()
+                plt.close()
+
+        # Post condition
+        if p300_post is not None:
+            time_ms = np.arange(p300_post.shape[0]) * 1000 / fs
+
+            results["Post"] = analyze_n200_p300_correlation(
+                erp_data=p300_post,
+                channel_labels=labels,
+                time_ms=time_ms,
+                condition_name="Post",
+            )
+
+            components = identify_early_components(
+                erp_data=p300_post,  # Shape: (512, 32, 54) = (time, ch, trials)
+                channel_labels=labels,
+                time_ms=time_ms,
+                condition_name="Online",
+                data_format="time_ch_trials",  # ← IMPORTANT: Specify this!
+            )
+            if results["Post"] is not None:
+                plt.savefig(
+                    f"{output_dir}/n200_p300_correlation_post.png",
+                    dpi=300,
+                    bbox_inches="tight",
+                )
+                plt.show()
+                plt.close()
+
+        # Online condition
+        if p300_online is not None:
+            time_ms = np.arange(p300_online.shape[0]) * 1000 / fs
+
+            results["Online"] = analyze_n200_p300_correlation(
+                erp_data=p300_online,
+                channel_labels=labels,
+                time_ms=time_ms,
+                condition_name="Online",
+            )
+
+            components = identify_early_components(
+                erp_data=p300_online,  # Shape: (512, 32, 54) = (time, ch, trials)
+                channel_labels=labels,
+                time_ms=time_ms,
+                condition_name="Online",
+                data_format="time_ch_trials",  # ← IMPORTANT: Specify this!
+            )
+
+            if results["Online"] is not None:
+                plt.savefig(
+                    f"{output_dir}/n200_p300_correlation_online.png",
+                    dpi=300,
+                    bbox_inches="tight",
+                )
+                plt.show()
+                plt.close()
+
+        # ===== CREATE COMPARISON SUMMARY =====
+        create_n200_p300_comparison_summary(results, output_dir)

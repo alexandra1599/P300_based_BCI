@@ -151,3 +151,54 @@ def sem(a, axis=0):
   a = np.asarray(a)
   ddof = 1 if a.shape[axis] > 1 else 0
   return np.std(a, axis=axis, ddof=ddof) / np.sqrt(max(a.shape[axis], 1))
+
+def shift_no_wrap(x, shift, pad=0.0):
+    """Shift 1D array by integer samples; pad with `pad` instead of wrap."""
+    y = np.full_like(x, pad)
+    if shift > 0:
+        y[shift:] = x[:-shift]
+    elif shift < 0:
+        y[:shift] = x[-shift:]
+    else:
+        y[:] = x
+    return y
+
+
+def woody_align_window(
+    t, X, window=(300, 600), max_shift_ms=80, pad=0.0, rebaseline=(-200, 0)
+):
+    """
+    X: (trials × time). Aligns only using the window; shifts the WHOLE trial with no wrap.
+    Then re-baselines to keep amplitude comparable.
+    """
+    t = np.asarray(t)
+    X = np.asarray(X)
+    dt = t[1] - t[0]
+    w = (t >= window[0]) & (t <= window[1])
+    ref = np.nanmean(X, axis=0)  # reference ERP
+    ref_w = ref[w] - np.mean(ref[(t >= rebaseline[0]) & (t <= rebaseline[1])])
+
+    max_shift = int(round(max_shift_ms / dt))
+    shifts = np.zeros(X.shape[0], dtype=int)
+    X_aligned = np.empty_like(X)
+
+    for i in range(X.shape[0]):
+        xi = X[i].copy()
+        # re-baseline first
+        base_mask = (t >= rebaseline[0]) & (t <= rebaseline[1])
+        xi -= np.mean(xi[base_mask])
+
+        # xcorr inside the window
+        c = correlate(xi[w], ref_w, mode="full")
+        lags = np.arange(-len(ref_w) + 1, len(ref_w))
+        m = (lags >= -max_shift) & (lags <= max_shift)
+        best_lag = lags[m][np.argmax(c[m])]
+        shifts[i] = best_lag
+
+        # shift entire trial with zero-padding (no wrap)
+        X_aligned[i] = shift_no_wrap(xi, best_lag, pad=0.0)
+
+        # re-baseline again (keeps comparability after shift)
+        X_aligned[i] -= np.mean(X_aligned[i][base_mask])
+
+    return X_aligned, shifts * dt

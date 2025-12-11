@@ -704,55 +704,6 @@ def run_analysis(
                 t_ms, X, window=(300, 600), max_shift_ms=80
             )
             erp_online_aligned = Xw.mean(axis=0)
-            plt.figure()
-            plt.plot(
-                time_ms,
-                erp_pre_aligned,
-                # gaussian_filter1d(pz_pre_target, sigma=2),
-                label="P300 Pre Offline",
-                color="blue",
-            )
-            plt.plot(
-                time_ms,
-                erp_post_aligned,
-                # gaussian_filter1d(pz_post_target, sigma=2),
-                label="P300 Post Offline",
-                color="red",
-            )
-            plt.plot(
-                time_ms,
-                erp_online_aligned,
-                # gaussian_filter1d(pz_online_target, sigma=2),
-                label="P300 Online",
-                color="green",
-            )
-            plt.fill_between(
-                time_ms,
-                erp_pre_aligned - stdpre,
-                erp_pre_aligned + stdpre,
-                color="blue",
-                alpha=0.2,
-            )
-            plt.fill_between(
-                time_ms,
-                erp_post_aligned - stdpost,
-                erp_post_aligned + stdpost,
-                color="red",
-                alpha=0.2,
-            )
-            plt.fill_between(
-                time_ms,
-                erp_online_aligned - stdonline,
-                erp_online_aligned + stdonline,
-                color="green",
-                alpha=0.2,
-            )
-            plt.title("Aligned P300 Analysis Comparison at Pz")
-            plt.xlabel("Time (ms)")
-            plt.ylabel("Amplitude (µV)")
-            plt.legend()
-            plt.grid(True)
-            plt.show()
 
             # Recompute metrics on the aligned ERP
             print(
@@ -779,25 +730,6 @@ def run_analysis(
             print(f"Latency drift ON: Spearman r={rho:.2f}, p={p:.3g}")
 
             """
-
-            X = p300_online[:, pz, :].T
-            Xw, shifts_ms = woody_align_window(
-                t_ms, X, window=(300, 600), max_shift_ms=80
-            )
-            erp_online_aligned = Xw.mean(axis=0)
-
-            erp_on_raw = X.mean(axis=0)
-            erp_on_aln = Xw.mean(axis=0)
-
-            m_on_raw = p3_metrics(
-                t_ms, erp_on_raw, baseline_window=(-400, -250), snr_method="mad"
-            )
-            m_on_aln = p3_metrics(
-                t_ms, erp_on_aln, baseline_window=(-400, -250), snr_method="mad"
-            )
-            print("Online (raw):    ", m_on_raw)
-            print("Online (aligned):", m_on_aln)
-            print(f"Alignment SD (ms): {np.std(shifts_ms):.1f}")
 
             from sklearn.cluster import KMeans
 

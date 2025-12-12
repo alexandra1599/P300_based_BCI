@@ -80,120 +80,217 @@ def time_frequency_analysis(epochs, fs, channel_idx, freqs=np.arange(1, 30, 1)):
     return fig, power_plot, f_plot
 
 
-def cluster_based_comparison(epochs1, epochs2, times, channel_idx, n_permutations=1000):
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def find_optimal_clusters(features, max_k=6):
     """
-    Cluster-based permutation test for ERP differences
+    Find optimal number of clusters using elbow method + silhouette score
 
     Parameters:
-        epochs1, epochs2: (samples, channels, trials) for two conditions
-        times: time vector in ms
-        channel_idx: channel to test
+        features: (n_trials, n_features) array
+        max_k: maximum number of clusters to test
+
+    Returns:
+        optimal_k: best number of clusters
+        all_scores: dict with inertia and silhouette scores
     """
-    from scipy import stats
+    inertias = []
+    silhouette_scores = []
+    K_range = range(2, max_k + 1)
 
-    # Extract data for one channel: (samples, trials)
-    data1 = epochs1[:, channel_idx, :]
-    data2 = epochs2[:, channel_idx, :]
+    for k in K_range:
+        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(features)
 
-    n_samples = data1.shape[0]
-    n_trials1 = data1.shape[1]
-    n_trials2 = data2.shape[1]
+        inertias.append(kmeans.inertia_)
+        silhouette_scores.append(silhouette_score(features, labels))
 
-    # Compute observed t-statistic at each time point
-    observed_t = np.zeros(n_samples)
-    observed_p = np.zeros(n_samples)
+    # Plot elbow curve
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
-    for t in range(n_samples):
-        t_stat, p_val = stats.ttest_ind(data1[t, :], data2[t, :])
-        observed_t[t] = t_stat
-        observed_p[t] = p_val
+    # Elbow method
+    ax1.plot(K_range, inertias, "bo-", linewidth=2, markersize=8)
+    ax1.set_xlabel("Number of Clusters (k)", fontsize=12)
+    ax1.set_ylabel("Inertia (Within-Cluster Sum of Squares)", fontsize=12)
+    ax1.set_title("Elbow Method", fontsize=14, fontweight="bold")
+    ax1.grid(True, alpha=0.3)
 
-    # Identify clusters in observed data (p < 0.05)
-    threshold = 2.0  # approximate t-threshold for p=0.05
-    clusters_obs = find_clusters(observed_t, threshold)
-
-    # Permutation test
-    max_cluster_stats = []
-    all_data = np.concatenate([data1, data2], axis=1)
-
-    for perm in range(n_permutations):
-        # Shuffle trial labels
-        perm_idx = np.random.permutation(n_trials1 + n_trials2)
-        perm_data1 = all_data[:, perm_idx[:n_trials1]]
-        perm_data2 = all_data[:, perm_idx[n_trials1:]]
-
-        # Compute permuted t-statistics
-        perm_t = np.zeros(n_samples)
-        for t in range(n_samples):
-            perm_t[t], _ = stats.ttest_ind(perm_data1[t, :], perm_data2[t, :])
-
-        # Find largest cluster in permuted data
-        clusters_perm = find_clusters(perm_t, threshold)
-        if clusters_perm:
-            max_cluster_stats.append(max([c["stat"] for c in clusters_perm]))
-        else:
-            max_cluster_stats.append(0)
-
-    # Compute cluster p-values
-    max_cluster_stats = np.array(max_cluster_stats)
-    for cluster in clusters_obs:
-        cluster["p_value"] = np.mean(max_cluster_stats >= cluster["stat"])
-
-    # Plot results
-    fig, axes = plt.subplots(3, 1, figsize=(12, 10))
-
-    # ERPs
-    ax = axes[0]
-    erp1 = data1.mean(axis=1)
-    erp2 = data2.mean(axis=1)
-    sem1 = data1.std(axis=1) / np.sqrt(n_trials1)
-    sem2 = data2.std(axis=1) / np.sqrt(n_trials2)
-
-    ax.plot(times, erp1, "b-", label="Pre", linewidth=2)
-    ax.fill_between(times, erp1 - sem1, erp1 + sem1, color="b", alpha=0.2)
-    ax.plot(times, erp2, "r-", label="Post", linewidth=2)
-    ax.fill_between(times, erp2 - sem2, erp2 + sem2, color="r", alpha=0.2)
-    ax.set_ylabel("Amplitude (µV)")
-    ax.set_title("ERP Comparison")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # T-statistics
-    ax = axes[1]
-    ax.plot(times, observed_t, "k-", linewidth=1.5)
-    ax.axhline(threshold, color="r", linestyle="--", label=f"Threshold (t={threshold})")
-    ax.axhline(-threshold, color="r", linestyle="--")
-    ax.set_ylabel("t-statistic")
-    ax.set_title("Point-wise t-test")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # Significant clusters
-    ax = axes[2]
-    ax.plot(times, erp1 - erp2, "k-", linewidth=2, label="Difference wave")
-
-    for cluster in clusters_obs:
-        if cluster["p_value"] < 0.05:
-            ax.axvspan(
-                times[cluster["start"]],
-                times[cluster["end"]],
-                alpha=0.3,
-                color="red",
-                label=(
-                    f"p={cluster['p_value']:.3f}" if cluster == clusters_obs[0] else ""
-                ),
-            )
-
-    ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Amplitude difference (µV)")
-    ax.set_title("Significant Clusters (p < 0.05)")
-    ax.axhline(0, color="gray", linestyle="-", linewidth=0.5)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # Silhouette score
+    ax2.plot(K_range, silhouette_scores, "ro-", linewidth=2, markersize=8)
+    ax2.set_xlabel("Number of Clusters (k)", fontsize=12)
+    ax2.set_ylabel("Silhouette Score", fontsize=12)
+    ax2.set_title("Silhouette Score (Higher is Better)", fontsize=14, fontweight="bold")
+    ax2.grid(True, alpha=0.3)
+    ax2.axhline(y=0.5, color="g", linestyle="--", label="Good threshold")
+    ax2.legend()
 
     plt.tight_layout()
     plt.show()
-    return fig, clusters_obs
+
+    # Find optimal k (highest silhouette score)
+    optimal_k = K_range[np.argmax(silhouette_scores)]
+
+    print(f"\n{'='*60}")
+    print(f"OPTIMAL NUMBER OF CLUSTERS")
+    print(f"{'='*60}")
+    print(f"Recommended k: {optimal_k}")
+    print(f"Silhouette score: {max(silhouette_scores):.3f}")
+    print(f"\nAll scores:")
+    for k, inertia, sil in zip(K_range, inertias, silhouette_scores):
+        marker = " ← BEST" if k == optimal_k else ""
+        print(f"  k={k}: Inertia={inertia:.1f}, Silhouette={sil:.3f}{marker}")
+    print(f"{'='*60}\n")
+
+    return optimal_k, {
+        "K_range": list(K_range),
+        "inertias": inertias,
+        "silhouette_scores": silhouette_scores,
+    }
+
+
+def cluster_based_comparison(
+    epochs_pre, epochs_post, times, channel_idx, n_permutations=1000
+):
+    """
+    Cluster-based permutation test for ERP comparison (Pre vs Post)
+
+    Returns:
+        fig: matplotlib figure
+        stats_dict: dictionary with keys:
+            - 't_obs': observed t-statistics
+            - 'p_obs': observed p-values
+            - 'significant_clusters': list of (start_idx, end_idx, mass, p_value)
+            - 'all_clusters': all detected clusters
+            - 'global_p': global p-value
+    """
+    from scipy import stats
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Extract data for specified channel
+    data_pre = epochs_pre[:, channel_idx, :]
+    data_post = epochs_post[:, channel_idx, :]
+
+    n_samples = data_pre.shape[0]
+    n_trials_pre = data_pre.shape[1]
+    n_trials_post = data_post.shape[1]
+
+    # Compute observed t-statistic at each time point
+    t_obs = np.zeros(n_samples)
+    p_obs = np.zeros(n_samples)
+
+    for t in range(n_samples):
+        t_stat, p_val = stats.ttest_ind(data_pre[t, :], data_post[t, :])
+        t_obs[t] = t_stat
+        p_obs[t] = p_val
+
+    # Identify clusters (p < 0.05)
+    cluster_threshold = 0.05
+    significant_mask = p_obs < cluster_threshold
+
+    # Find contiguous clusters
+    def find_clusters(mask):
+        clusters = []
+        in_cluster = False
+        cluster_start = 0
+
+        for i in range(len(mask)):
+            if mask[i] and not in_cluster:
+                in_cluster = True
+                cluster_start = i
+            elif not mask[i] and in_cluster:
+                clusters.append((cluster_start, i - 1))
+                in_cluster = False
+
+        if in_cluster:
+            clusters.append((cluster_start, len(mask) - 1))
+
+        return clusters
+
+    observed_clusters = find_clusters(significant_mask)
+
+    # Compute cluster masses
+    cluster_masses = []
+    for start, end in observed_clusters:
+        mass = np.sum(np.abs(t_obs[start : end + 1]))
+        cluster_masses.append(mass)
+
+    max_cluster_mass_obs = max(cluster_masses) if cluster_masses else 0
+
+    print(f"Found {len(observed_clusters)} initial clusters")
+    print(f"Max observed cluster mass: {max_cluster_mass_obs:.2f}")
+
+    # Permutation test
+    print(f"Running {n_permutations} permutations...")
+
+    max_cluster_masses_perm = np.zeros(n_permutations)
+    all_data = np.concatenate([data_pre, data_post], axis=1)
+    total_trials = n_trials_pre + n_trials_post
+
+    for perm in range(n_permutations):
+        if perm % 100 == 0:
+            print(f"  Permutation {perm}/{n_permutations}")
+
+        # Shuffle
+        perm_indices = np.random.permutation(total_trials)
+        perm_group1 = all_data[:, perm_indices[:n_trials_pre]]
+        perm_group2 = all_data[:, perm_indices[n_trials_pre:]]
+
+        # Compute t-statistics
+        t_perm = np.zeros(n_samples)
+        p_perm = np.zeros(n_samples)
+
+        for t in range(n_samples):
+            t_stat, p_val = stats.ttest_ind(perm_group1[t, :], perm_group2[t, :])
+            t_perm[t] = t_stat
+            p_perm[t] = p_val
+
+        # Find clusters
+        perm_mask = p_perm < cluster_threshold
+        perm_clusters = find_clusters(perm_mask)
+
+        # Get max cluster mass
+        if perm_clusters:
+            perm_masses = [np.sum(np.abs(t_perm[s : e + 1])) for s, e in perm_clusters]
+            max_cluster_masses_perm[perm] = max(perm_masses)
+
+    # Determine significance
+    significant_clusters = []
+    cluster_p_values = []
+    cluster_alpha = 0.05
+
+    for i, (start, end) in enumerate(observed_clusters):
+        mass = cluster_masses[i]
+        p_cluster = np.sum(max_cluster_masses_perm >= mass) / n_permutations
+        cluster_p_values.append(p_cluster)
+
+        if p_cluster < cluster_alpha:
+            significant_clusters.append((start, end, mass, p_cluster))
+            print(
+                f"✓ Significant: {times[start]:.0f}-{times[end]:.0f} ms, p={p_cluster:.4f}"
+            )
+
+    # Global p-value
+    p_global = np.sum(max_cluster_masses_perm >= max_cluster_mass_obs) / n_permutations
+
+    # Create figure (your existing plotting code)
+    fig = plt.figure(figsize=(15, 10))
+    # ... [all your plotting code] ...
+
+    # CRITICAL: Return dictionary, not list
+    return fig, {
+        "t_obs": t_obs,
+        "p_obs": p_obs,
+        "significant_clusters": significant_clusters,
+        "all_clusters": observed_clusters,
+        "cluster_p_values": cluster_p_values,
+        "permutation_distribution": max_cluster_masses_perm,
+        "global_p": p_global,
+    }
 
 
 def find_clusters(t_values, threshold):
@@ -226,17 +323,141 @@ def find_clusters(t_values, threshold):
     return clusters
 
 
-def difference_wave_analysis(
-    target_epochs, nontarget_epochs, times, channels_to_plot, labels, fs=512
+import pandas as pd
+import statsmodels.formula.api as smf
+from statsmodels.regression.mixed_linear_model import MixedLM
+import numpy as np
+
+
+def run_mixed_effects_analysis(
+    all_subjects_data, condition_pair, times, channel_idx=26
 ):
     """
-    Compute and visualize difference waves (target - non-target)
+    Run mixed effects model comparing two conditions across subjects.
 
     Parameters:
-        target_epochs, nontarget_epochs: (samples, channels, trials)
+    -----------
+    all_subjects_data : dict
+        Dictionary with subject IDs as keys
+    condition_pair : tuple
+        e.g., ('nback_pre_target_all', 'nback_post_target_all')
+    times : array
+        Time points array
+    channel_idx : int
+        Channel index to analyze (default 26 for Pz)
+    """
+    import warnings
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+    import pandas as pd
+    from statsmodels.regression.mixed_linear_model import MixedLM
+
+    # Suppress convergence warnings
+    warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
+    condition1_key, condition2_key = condition_pair
+
+    # Prepare data in long format
+    data_list = []
+
+    for subj_id, subj_data in all_subjects_data.items():
+        # Extract channel first: (time, channels, trials) -> (time, trials)
+        cond1 = subj_data[condition1_key][:, channel_idx, :]
+        cond2 = subj_data[condition2_key][:, channel_idx, :]
+
+        n_timepoints, n_cond1_trials = cond1.shape
+        _, n_cond2_trials = cond2.shape
+
+        # Add condition 1 trials
+        for trial in range(n_cond1_trials):
+            for t_idx in range(n_timepoints):
+                data_list.append(
+                    {
+                        "subject": subj_id,
+                        "time_idx": t_idx,
+                        "time": times[t_idx] if times is not None else t_idx,
+                        "amplitude": cond1[t_idx, trial],
+                        "condition": "condition1",
+                        "trial": trial,
+                    }
+                )
+
+        # Add condition 2 trials
+        for trial in range(n_cond2_trials):
+            for t_idx in range(n_timepoints):
+                data_list.append(
+                    {
+                        "subject": subj_id,
+                        "time_idx": t_idx,
+                        "time": times[t_idx] if times is not None else t_idx,
+                        "amplitude": cond2[t_idx, trial],
+                        "condition": "condition2",
+                        "trial": trial,
+                    }
+                )
+
+    df = pd.DataFrame(data_list)
+
+    # Run mixed effects model at each time point
+    results = []
+    for t_idx in range(len(times)):
+        df_time = df[df["time_idx"] == t_idx]
+
+        try:
+            # Mixed effects: condition as fixed effect, random intercept per subject
+            model = MixedLM.from_formula(
+                "amplitude ~ condition", data=df_time, groups=df_time["subject"]
+            )
+            result = model.fit(reml=True, method="nm")  # Use REML
+
+            results.append(
+                {
+                    "time": times[t_idx] if times is not None else t_idx,
+                    "time_idx": t_idx,
+                    "t_stat": result.tvalues["condition[T.condition2]"],
+                    "p_value": result.pvalues["condition[T.condition2]"],
+                    "coef": result.params["condition[T.condition2]"],
+                    "converged": result.converged,
+                }
+            )
+        except Exception as e:
+            results.append(
+                {
+                    "time": times[t_idx] if times is not None else t_idx,
+                    "time_idx": t_idx,
+                    "t_stat": np.nan,
+                    "p_value": np.nan,
+                    "coef": np.nan,
+                    "converged": False,
+                }
+            )
+
+    results_df = pd.DataFrame(results)
+    return results_df
+
+
+def difference_wave_analysis(
+    target_epochs,
+    nontarget_epochs,
+    times,
+    channels_to_plot,
+    labels,
+    all,
+    comparison_type="target_vs_nontarget",
+    condition_prefix="nback_pre",
+    fs=512,
+):
+    """
+    Compute and visualize difference waves
+
+    Parameters:
+        target_epochs, nontarget_epochs: (samples, channels, trials) - for backward compatibility
         times: time vector in ms
         channels_to_plot: list of channel indices
         labels: channel names
+        all_subjects_data: dict with all subjects' data
+        comparison_type: 'target_vs_nontarget' or 'pre_vs_post'
+        condition_prefix: 'nback_pre', 'nback_post', 'model_pre', etc.
+        fs: sampling rate
     """
     from scipy.stats import ttest_rel
     from scipy.ndimage import gaussian_filter1d
@@ -248,28 +469,78 @@ def difference_wave_analysis(
         axes = [axes]
 
     for idx, (ax, ch_idx) in enumerate(zip(axes, channels_to_plot)):
-        # Extract channel data
-        target = target_epochs[:, ch_idx, :]
-        nontarget = nontarget_epochs[:, ch_idx, :]
+
+        # Determine which comparison to make
+        if comparison_type == "target_vs_nontarget":
+            condition_pair = (
+                f"{condition_prefix}_target_all",
+                f"{condition_prefix}_nontarget_all",
+            )
+            title_suffix = "Target vs Non-Target"
+            label1, label2 = "Target", "Non-target"
+
+            # Extract channel data for plotting (backward compatible)
+            target = target_epochs[:, ch_idx, :]
+            nontarget = nontarget_epochs[:, ch_idx, :]
+
+        elif comparison_type == "pre_vs_post":
+            # Extract condition name (nback, model, online)
+            condition_name = condition_prefix.split("_")[
+                0
+            ]  # e.g., 'nback' from 'nback_pre'
+
+            # Determine if comparing target or nontarget
+            if "target" in condition_prefix or condition_prefix.endswith("_target"):
+                condition_pair = (
+                    f"{condition_name}_pre_target_all",
+                    f"{condition_name}_post_target_all",
+                )
+                suffix = "Target"
+            else:
+                condition_pair = (
+                    f"{condition_name}_pre_nontarget_all",
+                    f"{condition_name}_post_nontarget_all",
+                )
+                suffix = "Non-Target"
+
+            title_suffix = f"{suffix}: Pre vs Post"
+            label1, label2 = "Pre", "Post"
+
+            # Extract data for plotting from all_subjects_data
+            target = extract_averaged_data(all, condition_pair[0], ch_idx)
+            nontarget = extract_averaged_data(all, condition_pair[1], ch_idx)
+
+        else:
+            raise ValueError(f"Unknown comparison_type: {comparison_type}")
 
         # Average ERPs
-        target_avg = target.mean(axis=1)
-        nontarget_avg = nontarget.mean(axis=1)
+        target_avg = target.mean(axis=1) if target.ndim > 1 else target
+        nontarget_avg = nontarget.mean(axis=1) if nontarget.ndim > 1 else nontarget
         difference = target_avg - nontarget_avg
 
         # SEM
-        target_sem = target.std(axis=1) / np.sqrt(target.shape[1])
-        nontarget_sem = nontarget.std(axis=1) / np.sqrt(nontarget.shape[1])
+        if target.ndim > 1:
+            target_sem = target.std(axis=1) / np.sqrt(target.shape[1])
+            nontarget_sem = nontarget.std(axis=1) / np.sqrt(nontarget.shape[1])
+        else:
+            target_sem = np.zeros_like(target)
+            nontarget_sem = np.zeros_like(nontarget)
 
-        # Point-wise t-test (not corrected - just for visualization)
-        t_stats = np.zeros(len(times))
-        p_values = np.zeros(len(times))
-        for t in range(len(times)):
-            # Use equal trial counts for paired test, or independent for unequal
-            min_trials = min(target.shape[1], nontarget.shape[1])
-            t_stats[t], p_values[t] = ttest_rel(
-                target[t, :min_trials], nontarget[t, :min_trials]
-            )
+        # Run mixed effects analysis
+        results = run_mixed_effects_analysis(
+            all,
+            condition_pair,
+            times,
+            channel_idx=ch_idx,
+        )
+
+        # Extract arrays for plotting
+        t_stats = results["t_stat"].values
+        p_values = results["p_value"].values
+
+        print(
+            f"{title_suffix} - Channel {labels[ch_idx-1]} - Significant time points (p < 0.05): {np.sum(p_values < 0.05)}"
+        )
 
         # Smooth for visualization
         target_smooth = gaussian_filter1d(target_avg, sigma=2)
@@ -277,7 +548,7 @@ def difference_wave_analysis(
         diff_smooth = gaussian_filter1d(difference, sigma=2)
 
         # Plot ERPs
-        ax.plot(times, target_smooth, "b-", label="Target", linewidth=2)
+        ax.plot(times, target_smooth, "b-", label=label1, linewidth=2)
         ax.fill_between(
             times,
             target_avg - target_sem,
@@ -285,7 +556,7 @@ def difference_wave_analysis(
             color="b",
             alpha=0.2,
         )
-        ax.plot(times, nontarget_smooth, "r-", label="Non-target", linewidth=2)
+        ax.plot(times, nontarget_smooth, "r-", label=label2, linewidth=2)
         ax.fill_between(
             times,
             nontarget_avg - nontarget_sem,
@@ -320,7 +591,7 @@ def difference_wave_analysis(
         ax.axvline(0, color="gray", linestyle="--", linewidth=1)
         ax.set_ylabel("Amplitude (µV)", fontsize=11)
         ax.set_title(
-            f"Channel {labels[ch_idx]}: Target vs Non-Target",
+            f"Channel {labels[ch_idx-1]}: {title_suffix}",
             fontsize=12,
             fontweight="bold",
         )
@@ -334,6 +605,22 @@ def difference_wave_analysis(
     plt.show()
 
     return fig
+
+
+def extract_averaged_data(all_subjects_data, condition_key, ch_idx):
+    """
+    Extract and average data across subjects for a given condition and channel.
+    Returns: (timepoints, subjects) array
+    """
+    subject_averages = []
+
+    for subj_id, subj_data in all_subjects_data.items():
+        # Extract channel: (time, channels, trials) -> (time, trials) -> (time,)
+        data = subj_data[condition_key][:, ch_idx, :].mean(axis=1)
+        subject_averages.append(data)
+
+    # Stack: shape (timepoints, n_subjects)
+    return np.array(subject_averages).T
 
 
 def butterfly_plot(epochs, times, labels, title="", highlight_channels=None):
@@ -588,3 +875,1117 @@ def compute_surface_laplacian_simple(epochs, montage, labels):
         )
 
     return laplacian_epochs
+
+
+def n200_p300_temporal_relationship(
+    epochs, times, channel_idx, n200_window=(150, 250), p300_window=(300, 600)
+):
+    """
+    Analyze the temporal relationship between N200 and P300
+
+    Theory: N200 (conflict/mismatch) predicts P300 (evaluation) amplitude/latency
+    """
+    from scipy import stats
+
+    n200_mask = (times >= n200_window[0]) & (times <= n200_window[1])
+    p300_mask = (times >= p300_window[0]) & (times <= p300_window[1])
+
+    data = epochs[:, channel_idx, :]  # (samples, trials)
+
+    # Extract N200 and P300 characteristics per trial
+    n200_amps = []
+    n200_lats = []
+    p300_amps = []
+    p300_lats = []
+
+    for trial in range(data.shape[1]):
+        # N200 (negative peak)
+        n200_signal = data[n200_mask, trial]
+        n200_min_idx = np.argmin(n200_signal)
+        n200_amps.append(n200_signal[n200_min_idx])
+        n200_lats.append(times[n200_mask][n200_min_idx])
+
+        # P300 (positive peak)
+        p300_signal = data[p300_mask, trial]
+        p300_max_idx = np.argmax(p300_signal)
+        p300_amps.append(p300_signal[p300_max_idx])
+        p300_lats.append(times[p300_mask][p300_max_idx])
+
+    n200_amps = np.array(n200_amps)
+    n200_lats = np.array(n200_lats)
+    p300_amps = np.array(p300_amps)
+    p300_lats = np.array(p300_lats)
+
+    # Compute N200-P300 interval
+    n200_p300_interval = p300_lats - n200_lats
+
+    # Correlations
+    corr_amp, p_amp = stats.pearsonr(np.abs(n200_amps), p300_amps)
+    corr_lat, p_lat = stats.pearsonr(n200_lats, p300_lats)
+    corr_interval_amp, p_interval = stats.pearsonr(n200_p300_interval, p300_amps)
+
+    # Plot
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    # 1. N200 amplitude vs P300 amplitude
+    ax = axes[0, 0]
+    ax.scatter(np.abs(n200_amps), p300_amps, alpha=0.6, s=40)
+    z = np.polyfit(np.abs(n200_amps), p300_amps, 1)
+    p_fit = np.poly1d(z)
+    x_fit = np.linspace(np.abs(n200_amps).min(), np.abs(n200_amps).max(), 100)
+    ax.plot(x_fit, p_fit(x_fit), "r--", linewidth=2)
+
+    ax.text(
+        0.05,
+        0.95,
+        f"r = {corr_amp:.3f}\np = {p_amp:.3g}",
+        transform=ax.transAxes,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+    )
+
+    ax.set_xlabel("|N200| Amplitude (µV)")
+    ax.set_ylabel("P300 Amplitude (µV)")
+    ax.set_title("N200 vs P300 Amplitude")
+    ax.grid(True, alpha=0.3)
+
+    # 2. N200 latency vs P300 latency
+    ax = axes[0, 1]
+    ax.scatter(n200_lats, p300_lats, alpha=0.6, s=40, color="purple")
+    z = np.polyfit(n200_lats, p300_lats, 1)
+    p_fit = np.poly1d(z)
+    x_fit = np.linspace(n200_lats.min(), n200_lats.max(), 100)
+    ax.plot(x_fit, p_fit(x_fit), "r--", linewidth=2)
+
+    ax.text(
+        0.05,
+        0.95,
+        f"r = {corr_lat:.3f}\np = {p_lat:.3g}",
+        transform=ax.transAxes,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+    )
+
+    ax.set_xlabel("N200 Latency (ms)")
+    ax.set_ylabel("P300 Latency (ms)")
+    ax.set_title("N200 vs P300 Latency")
+    ax.grid(True, alpha=0.3)
+
+    # 3. N200-P300 interval distribution
+    ax = axes[1, 0]
+    ax.hist(n200_p300_interval, bins=20, edgecolor="black", alpha=0.7, color="skyblue")
+    ax.axvline(
+        np.mean(n200_p300_interval),
+        color="r",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mean: {np.mean(n200_p300_interval):.1f} ms",
+    )
+    ax.set_xlabel("N200-P300 Interval (ms)")
+    ax.set_ylabel("Count")
+    ax.set_title(
+        f"N200→P300 Temporal Separation\n(SD = {np.std(n200_p300_interval):.1f} ms)"
+    )
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # 4. Interval vs P300 amplitude
+    ax = axes[1, 1]
+    ax.scatter(n200_p300_interval, p300_amps, alpha=0.6, s=40, color="green")
+    z = np.polyfit(n200_p300_interval, p300_amps, 1)
+    p_fit = np.poly1d(z)
+    x_fit = np.linspace(n200_p300_interval.min(), n200_p300_interval.max(), 100)
+    ax.plot(x_fit, p_fit(x_fit), "r--", linewidth=2)
+
+    ax.text(
+        0.05,
+        0.95,
+        f"r = {corr_interval_amp:.3f}\np = {p_interval:.3g}",
+        transform=ax.transAxes,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+    )
+
+    ax.set_xlabel("N200-P300 Interval (ms)")
+    ax.set_ylabel("P300 Amplitude (µV)")
+    ax.set_title("Temporal Separation vs P300 Strength")
+    ax.grid(True, alpha=0.3)
+
+    plt.suptitle("N200-P300 Component Interaction", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+
+    return fig, {
+        "n200_amps": n200_amps,
+        "n200_lats": n200_lats,
+        "p300_amps": p300_amps,
+        "p300_lats": p300_lats,
+        "interval": n200_p300_interval,
+        "corr_amp": corr_amp,
+        "p_amp": p_amp,
+        "corr_lat": corr_lat,
+        "p_lat": p_lat,
+        "corr_interval_amp": corr_interval_amp,
+        "p_interval": p_interval,
+    }
+
+
+def create_n200_p300_comparison_summary(results, output_dir):
+    """
+    Create summary comparison across conditions
+    """
+
+    conditions = [
+        k for k in ["Pre", "Post", "Online"] if k in results and results[k] is not None
+    ]
+
+    if len(conditions) == 0:
+        print("No valid results to compare")
+        return
+
+    # Extract correlation values
+    correlations = []
+    p_values = []
+    intervals = []
+
+    for cond in conditions:
+        correlations.append(results[cond]["r_amplitude"])
+        p_values.append(results[cond]["p_amplitude"])
+        intervals.append(results[cond]["interval"].mean())
+
+    # Create summary figure
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+    # 1. Correlation coefficients
+    ax = axes[0]
+    colors = ["steelblue", "coral", "mediumseagreen"][: len(conditions)]
+    bars = ax.bar(
+        conditions,
+        correlations,
+        color=colors,
+        alpha=0.7,
+        edgecolor="black",
+        linewidth=2,
+    )
+    ax.axhline(y=0, color="black", linestyle="-", linewidth=1)
+    ax.set_ylabel("Correlation Coefficient (r)", fontsize=13, fontweight="bold")
+    ax.set_title("N200-P300 Amplitude Correlation", fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.3, axis="y")
+
+    # Add significance stars
+    for i, (bar, r, p) in enumerate(zip(bars, correlations, p_values)):
+        sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else ""
+        if sig:
+            height = bar.get_height()
+            offset = 0.05 if height > 0 else -0.1
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height + offset,
+                sig,
+                ha="center",
+                va="bottom" if height > 0 else "top",
+                fontsize=16,
+                fontweight="bold",
+            )
+
+    # 2. P-values
+    ax = axes[1]
+    ax.bar(
+        conditions,
+        [-np.log10(p) for p in p_values],
+        color=colors,
+        alpha=0.7,
+        edgecolor="black",
+        linewidth=2,
+    )
+    ax.axhline(
+        y=-np.log10(0.05), color="red", linestyle="--", linewidth=2, label="p=0.05"
+    )
+    ax.axhline(
+        y=-np.log10(0.01), color="orange", linestyle="--", linewidth=2, label="p=0.01"
+    )
+    ax.axhline(
+        y=-np.log10(0.001),
+        color="darkred",
+        linestyle="--",
+        linewidth=2,
+        label="p=0.001",
+    )
+    ax.set_ylabel("-log₁₀(p-value)", fontsize=13, fontweight="bold")
+    ax.set_title("Statistical Significance", fontsize=14, fontweight="bold")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3, axis="y")
+
+    # 3. Mean N200-P300 intervals
+    ax = axes[2]
+    ax.bar(
+        conditions, intervals, color=colors, alpha=0.7, edgecolor="black", linewidth=2
+    )
+    ax.set_ylabel("Mean Interval (ms)", fontsize=13, fontweight="bold")
+    ax.set_title("N200-P300 Temporal Separation", fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.3, axis="y")
+
+    plt.suptitle(
+        "N200-P300 Correlation Comparison Across Conditions",
+        fontsize=16,
+        fontweight="bold",
+        y=0.98,
+    )
+    plt.tight_layout()
+
+    # Save
+    save_path = f"{output_dir}/n200_p300_comparison_summary.png"
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    print(f"\n✓ Saved comparison summary: {save_path}")
+    plt.show()
+    plt.close()
+
+    # Print summary table
+    print("\n" + "=" * 70)
+    print("N200-P300 CORRELATION SUMMARY")
+    print("=" * 70)
+    print(
+        f"{'Condition':<12} {'r':<10} {'p-value':<12} {'Interval (ms)':<15} {'Significance'}"
+    )
+    print("-" * 70)
+    for cond, r, p, intv in zip(conditions, correlations, p_values, intervals):
+        sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "n.s."
+        print(f"{cond:<12} {r:>9.3f} {p:>11.4f} {intv:>14.1f} {sig:>15}")
+    print("=" * 70)
+
+
+def analyze_n200_p300_correlation(
+    erp_data,
+    channel_labels,
+    time_ms,
+    condition_name="Unknown",
+    n200_channels=None,
+    p300_channels=None,
+    data_format="time_ch_trials",
+):
+    """
+    Proper N200-P300 correlation with correct electrode selection
+    """
+
+    from scipy.stats import pearsonr
+
+    # ===== HANDLE DATA FORMAT =====
+    if data_format == "time_ch_trials":
+        print(f"Input shape: {erp_data.shape} (time, channels, trials)")
+        erp_data = np.transpose(erp_data, (2, 1, 0))  # → (trials, channels, time)
+        print(f"Transposed to: {erp_data.shape} (trials, channels, time)")
+
+    n_trials, n_channels, n_timepoints = erp_data.shape
+    print(
+        f"Working with: {n_trials} trials, {n_channels} channels, {n_timepoints} timepoints"
+    )
+
+    # Default channel selections
+    if n200_channels is None:
+        n200_channels = ["FCZ"]
+    if p300_channels is None:
+        p300_channels = ["PZ"]
+
+    # Normalize channel labels
+    channel_labels_upper = [ch.upper() for ch in channel_labels]
+
+    # Find N200 channel
+    n200_ch_idx = None
+    n200_ch_name = None
+    for ch_name in n200_channels:
+        if ch_name in channel_labels_upper:
+            n200_ch_idx = channel_labels_upper.index(ch_name)
+            n200_ch_name = ch_name
+            break
+
+    # Find P300 channel
+    p300_ch_idx = None
+    p300_ch_name = None
+    for ch_name in p300_channels:
+        if ch_name in channel_labels_upper:
+            p300_ch_idx = channel_labels_upper.index(ch_name)
+            p300_ch_name = ch_name
+            break
+
+    if n200_ch_idx is None or p300_ch_idx is None:
+        print(f"⚠️ Required channels not found!")
+        print(f"   Available channels: {channel_labels}")
+        print(f"   N200 channels tried: {n200_channels}")
+        print(f"   P300 channels tried: {p300_channels}")
+        return None
+
+    print(f"\n{'='*70}")
+    print(f"N200-P300 CORRELATION ANALYSIS - {condition_name}")
+    print(f"{'='*70}")
+    print(f"N200 channel: {n200_ch_name} (frontocentral)")
+    print(f"P300 channel: {p300_ch_name} (parietal)")
+
+    if n200_ch_idx == p300_ch_idx:
+        print(f"⚠️ WARNING: Same channel used for both components!")
+    else:
+        print(f"✓ Using DIFFERENT electrodes - geometrically independent")
+
+    # ===== CORRECTED EXTRACTION =====
+
+    # Create time masks
+    n200_window = (time_ms >= 150) & (time_ms <= 250)
+    p300_window = (time_ms >= 300) & (time_ms <= 500)
+
+    print(f"\nExtracting N200 from {n200_ch_name}...")
+    print(f"  Time window: 150-250 ms ({n200_window.sum()} timepoints)")
+
+    # Extract N200 data: (trials, time_in_window)
+    n200_data = erp_data[:, n200_ch_idx, :]  # Shape: (trials, all_timepoints)
+    n200_data = n200_data[:, n200_window]  # Shape: (trials, time_in_window)
+    print(f"  N200 data shape: {n200_data.shape}")
+
+    # Find minimum (most negative) for each trial
+    n200_amps = np.min(n200_data, axis=1)  # Shape: (trials,)
+    n200_lat_indices = np.argmin(n200_data, axis=1)
+    n200_lats = time_ms[n200_window][n200_lat_indices]
+
+    print(f"\nExtracting P300 from {p300_ch_name}...")
+    print(f"  Time window: 300-500 ms ({p300_window.sum()} timepoints)")
+
+    # Extract P300 data: (trials, time_in_window)
+    p300_data = erp_data[:, p300_ch_idx, :]  # Shape: (trials, all_timepoints)
+    p300_data = p300_data[:, p300_window]  # Shape: (trials, time_in_window)
+    print(f"  P300 data shape: {p300_data.shape}")
+
+    # Find maximum (most positive) for each trial
+    p300_amps = np.max(p300_data, axis=1)  # Shape: (trials,)
+    p300_lat_indices = np.argmax(p300_data, axis=1)
+    p300_lats = time_ms[p300_window][p300_lat_indices]
+
+    # Calculate correlations
+    r, p_val = pearsonr(np.abs(n200_amps), p300_amps)
+
+    # Calculate N200-P300 interval
+    interval = p300_lats - n200_lats
+    r_interval, p_interval = pearsonr(interval, p300_amps)
+
+    print(f"\nResults:")
+    print(f"  N trials: {n_trials}")
+    print(f"  N200 amplitude range: [{n200_amps.min():.2f}, {n200_amps.max():.2f}] μV")
+    print(f"  P300 amplitude range: [{p300_amps.min():.2f}, {p300_amps.max():.2f}] μV")
+    print(f"  Mean interval: {interval.mean():.1f} ± {interval.std():.1f} ms")
+    print(f"\n  Amplitude correlation: r = {r:.3f}, p = {p_val:.4f}")
+    print(f"  Interval correlation: r = {r_interval:.3f}, p = {p_interval:.4f}")
+
+    sig = (
+        "***"
+        if p_val < 0.001
+        else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "n.s."
+    )
+    print(f"  Significance: {sig}")
+
+    # ===== VISUALIZATION =====
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 1. Scatter: N200 vs P300 amplitude
+    ax = axes[0, 0]
+    ax.scatter(
+        np.abs(n200_amps),
+        p300_amps,
+        alpha=0.5,
+        s=50,
+        color="steelblue",
+        edgecolor="black",
+        linewidth=0.5,
+    )
+
+    # Regression line
+    z = np.polyfit(np.abs(n200_amps), p300_amps, 1)
+    p_fit = np.poly1d(z)
+    x_line = np.linspace(np.abs(n200_amps).min(), np.abs(n200_amps).max(), 100)
+    ax.plot(
+        x_line,
+        p_fit(x_line),
+        "r--",
+        alpha=0.8,
+        linewidth=2.5,
+        label=f"y = {z[0]:.2f}x + {z[1]:.2f}",
+    )
+
+    ax.text(
+        0.05,
+        0.95,
+        f"r = {r:.3f}\np = {p_val:.4f}\n{sig}",
+        transform=ax.transAxes,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.9),
+        fontsize=11,
+        fontweight="bold",
+    )
+
+    ax.set_xlabel(
+        f"|N200| Amplitude at {n200_ch_name} (μV)", fontsize=12, fontweight="bold"
+    )
+    ax.set_ylabel(
+        f"P300 Amplitude at {p300_ch_name} (μV)", fontsize=12, fontweight="bold"
+    )
+    ax.set_title(
+        f"{condition_name}: N200-P300 Amplitude Correlation",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=10)
+
+    # 2. Grand average waveforms
+    ax = axes[0, 1]
+    grand_avg = np.mean(erp_data, axis=0)  # (channels, time)
+
+    ax.plot(
+        time_ms,
+        grand_avg[n200_ch_idx, :],
+        "b-",
+        linewidth=2.5,
+        label=f"{n200_ch_name} (N200)",
+        alpha=0.8,
+    )
+    ax.plot(
+        time_ms,
+        grand_avg[p300_ch_idx, :],
+        "r-",
+        linewidth=2.5,
+        label=f"{p300_ch_name} (P300)",
+        alpha=0.8,
+    )
+
+    # Mark windows
+    ax.axvspan(150, 250, alpha=0.2, color="blue", label="N200 window")
+    ax.axvspan(300, 500, alpha=0.2, color="red", label="P300 window")
+    ax.axhline(y=0, color="k", linestyle="--", alpha=0.5, linewidth=1)
+    ax.axvline(x=0, color="k", linestyle="--", alpha=0.5, linewidth=1)
+
+    ax.set_xlabel("Time (ms)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Amplitude (μV)", fontsize=12, fontweight="bold")
+    ax.set_title(
+        f"{condition_name}: Grand Average ERPs", fontsize=13, fontweight="bold"
+    )
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    # 3. Interval distribution
+    ax = axes[1, 0]
+    ax.hist(interval, bins=25, edgecolor="black", alpha=0.7, color="mediumseagreen")
+    ax.axvline(
+        interval.mean(),
+        color="red",
+        linestyle="--",
+        linewidth=2.5,
+        label=f"Mean: {interval.mean():.1f} ms",
+    )
+    ax.axvline(
+        np.median(interval),
+        color="orange",
+        linestyle="--",
+        linewidth=2.5,
+        label=f"Median: {np.median(interval):.1f} ms",
+    )
+
+    ax.set_xlabel("N200-P300 Interval (ms)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Trial Count", fontsize=12, fontweight="bold")
+    ax.set_title(
+        f"Temporal Separation (SD = {interval.std():.1f} ms)",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3, axis="y")
+
+    # 4. Interval vs P300 amplitude
+    ax = axes[1, 1]
+    ax.scatter(
+        interval,
+        p300_amps,
+        alpha=0.5,
+        s=50,
+        color="purple",
+        edgecolor="black",
+        linewidth=0.5,
+    )
+
+    z = np.polyfit(interval, p300_amps, 1)
+    p_fit = np.poly1d(z)
+    x_line = np.linspace(interval.min(), interval.max(), 100)
+    ax.plot(x_line, p_fit(x_line), "r--", alpha=0.8, linewidth=2.5)
+
+    ax.text(
+        0.05,
+        0.95,
+        f"r = {r_interval:.3f}\np = {p_interval:.4f}",
+        transform=ax.transAxes,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.9),
+        fontsize=11,
+        fontweight="bold",
+    )
+
+    ax.set_xlabel("N200-P300 Interval (ms)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("P300 Amplitude (μV)", fontsize=12, fontweight="bold")
+    ax.set_title("Temporal Separation vs P300 Strength", fontsize=13, fontweight="bold")
+    ax.grid(True, alpha=0.3)
+
+    plt.suptitle(
+        f"{condition_name}: N200-P300 Component Interaction",
+        fontsize=15,
+        fontweight="bold",
+        y=0.995,
+    )
+    plt.tight_layout()
+
+    return {
+        "condition": condition_name,
+        "n200_channel": n200_ch_name,
+        "p300_channel": p300_ch_name,
+        "same_channel": (n200_ch_idx == p300_ch_idx),
+        "n_trials": n_trials,
+        "n200_amplitudes": n200_amps,
+        "n200_latencies": n200_lats,
+        "p300_amplitudes": p300_amps,
+        "p300_latencies": p300_lats,
+        "interval": interval,
+        "r_amplitude": r,
+        "p_amplitude": p_val,
+        "r_interval": r_interval,
+        "p_interval": p_interval,
+        "figure": fig,
+    }
+
+
+def identify_early_components(
+    erp_data,
+    channel_labels,
+    time_ms,
+    condition_name="Unknown",
+    data_format="time_ch_trials",
+):
+    """
+    Identify and characterize early ERP components (N1, P2, etc.)
+    """
+
+    # ===== HANDLE DATA FORMAT =====
+    if data_format == "time_ch_trials":
+        print(f"Input shape: {erp_data.shape} (time, channels, trials)")
+        erp_data = np.transpose(erp_data, (2, 1, 0))  # → (trials, channels, time)
+        print(f"Transposed to: {erp_data.shape} (trials, channels, time)")
+
+    n_trials, n_channels, n_timepoints = erp_data.shape
+
+    # Find key channels
+    channel_labels_upper = [ch.upper() for ch in channel_labels]
+
+    # Find channels (with fallbacks)
+    pz_idx = channel_labels_upper.index("PZ") if "PZ" in channel_labels_upper else None
+
+    # For frontal: try FZ, FC1, FC2
+    fz_idx = None
+    for ch in ["FZ", "FC1", "FC2", "CZ"]:
+        if ch in channel_labels_upper:
+            fz_idx = channel_labels_upper.index(ch)
+            fz_name = ch
+            break
+
+    # For occipital: try OZ, POZ, O1
+    oz_idx = None
+    for ch in ["OZ", "POZ", "O1", "O2"]:
+        if ch in channel_labels_upper:
+            oz_idx = channel_labels_upper.index(ch)
+            oz_name = ch
+            break
+
+    if pz_idx is None or fz_idx is None or oz_idx is None:
+        print(f"⚠️ Required channels not found!")
+        print(f"   PZ: {'✓' if pz_idx else '✗'}")
+        print(f"   FZ: {'✓' if fz_idx else '✗'}")
+        print(f"   OZ: {'✓' if oz_idx else '✗'}")
+        return None
+
+    print(f"\nUsing channels:")
+    print(f"  Parietal: PZ (index {pz_idx})")
+    print(f"  Frontal: {fz_name} (index {fz_idx})")
+    print(f"  Occipital: {oz_name} (index {oz_idx})")
+
+    # Grand average - NOW CORRECT SHAPE
+    grand_avg = np.mean(erp_data, axis=0)  # Average across trials → (channels, time)
+    print(f"Grand average shape: {grand_avg.shape} (channels, time)")
+
+    # Create comprehensive plot
+    fig, axes = plt.subplots(3, 2, figsize=(16, 14))
+
+    # ===== PLOT 1: Full waveform at Pz =====
+    ax = axes[0, 0]
+    ax.plot(time_ms, grand_avg[pz_idx, :], "b-", linewidth=2.5, label="Pz")
+
+    # Mark component windows
+    ax.axvspan(80, 150, alpha=0.2, color="purple", label="N1 window")
+    ax.axvspan(150, 250, alpha=0.2, color="orange", label="P2 window")
+    ax.axvspan(200, 280, alpha=0.2, color="pink", label="N2 window")
+    ax.axvspan(300, 500, alpha=0.2, color="red", label="P300 window")
+
+    ax.axhline(y=0, color="k", linestyle="--", alpha=0.5)
+    ax.axvline(x=0, color="k", linestyle="--", alpha=0.5)
+
+    ax.set_xlabel("Time (ms)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Amplitude (μV)", fontsize=12, fontweight="bold")
+    ax.set_title(f"{condition_name}: Full ERP at Pz", fontsize=14, fontweight="bold")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim([time_ms.min(), time_ms.max()])
+
+    # ===== PLOT 2: Zoom on early components (0-300ms) =====
+    ax = axes[0, 1]
+    ax.plot(time_ms, grand_avg[pz_idx, :], "b-", linewidth=3, label="Pz", alpha=0.8)
+    ax.plot(time_ms, grand_avg[fz_idx, :], "r-", linewidth=3, label=fz_name, alpha=0.8)
+    ax.plot(time_ms, grand_avg[oz_idx, :], "g-", linewidth=3, label=oz_name, alpha=0.8)
+
+    ax.axhline(y=0, color="k", linestyle="--", alpha=0.5)
+    ax.axvline(x=0, color="k", linestyle="--", alpha=0.5)
+
+    ax.set_xlabel("Time (ms)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Amplitude (μV)", fontsize=12, fontweight="bold")
+    ax.set_title("Early Components (0-300ms)", fontsize=14, fontweight="bold")
+    ax.legend(loc="best", fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    early_window = (time_ms >= 0) & (time_ms <= 300)
+    ax.set_xlim([0, 300])
+
+    # ===== ANALYZE COMPONENTS =====
+    components = {}
+
+    # P1 (50-100ms) - Positive, occipital
+    p1_window = (time_ms >= 50) & (time_ms <= 100)
+    if p1_window.sum() > 0:
+        p1_data = grand_avg[oz_idx, p1_window]
+        p1_peak = p1_data.max()
+        p1_lat = time_ms[p1_window][np.argmax(p1_data)]
+        components["P1"] = {"peak": p1_peak, "latency": p1_lat, "channel": oz_name}
+
+    # N1 (80-150ms) - Negative, central/occipital
+    n1_window = (time_ms >= 80) & (time_ms <= 150)
+    if n1_window.sum() > 0:
+        n1_data_pz = grand_avg[pz_idx, n1_window]
+        n1_data_oz = grand_avg[oz_idx, n1_window]
+
+        n1_peak_pz = n1_data_pz.min()
+        n1_lat_pz = time_ms[n1_window][np.argmin(n1_data_pz)]
+
+        n1_peak_oz = n1_data_oz.min()
+        n1_lat_oz = time_ms[n1_window][np.argmin(n1_data_oz)]
+
+        # Use whichever is more negative
+        if n1_peak_oz < n1_peak_pz:
+            components["N1"] = {
+                "peak": n1_peak_oz,
+                "latency": n1_lat_oz,
+                "channel": oz_name,
+            }
+        else:
+            components["N1"] = {
+                "peak": n1_peak_pz,
+                "latency": n1_lat_pz,
+                "channel": "PZ",
+            }
+
+    # P2 (150-250ms) - Positive, frontal/central
+    p2_window = (time_ms >= 150) & (time_ms <= 250)
+    if p2_window.sum() > 0:
+        p2_data_pz = grand_avg[pz_idx, p2_window]
+        p2_data_fz = grand_avg[fz_idx, p2_window]
+
+        p2_peak_pz = p2_data_pz.max()
+        p2_lat_pz = time_ms[p2_window][np.argmax(p2_data_pz)]
+
+        p2_peak_fz = p2_data_fz.max()
+        p2_lat_fz = time_ms[p2_window][np.argmax(p2_data_fz)]
+
+        # Use whichever is larger
+        if p2_peak_fz > p2_peak_pz:
+            components["P2"] = {
+                "peak": p2_peak_fz,
+                "latency": p2_lat_fz,
+                "channel": fz_name,
+            }
+        else:
+            components["P2"] = {
+                "peak": p2_peak_pz,
+                "latency": p2_lat_pz,
+                "channel": "PZ",
+            }
+
+    # N2 (180-280ms) - Negative, frontal
+    n2_window = (time_ms >= 180) & (time_ms <= 280)
+    if n2_window.sum() > 0:
+        n2_data_fz = grand_avg[fz_idx, n2_window]
+        n2_peak_fz = n2_data_fz.min()
+        n2_lat_fz = time_ms[n2_window][np.argmin(n2_data_fz)]
+        components["N2"] = {
+            "peak": n2_peak_fz,
+            "latency": n2_lat_fz,
+            "channel": fz_name,
+        }
+
+    # P300 (300-500ms) - Positive, parietal
+    p300_window = (time_ms >= 300) & (time_ms <= 500)
+    if p300_window.sum() > 0:
+        p300_data = grand_avg[pz_idx, p300_window]
+        p300_peak = p300_data.max()
+        p300_lat = time_ms[p300_window][np.argmax(p300_data)]
+        components["P300"] = {"peak": p300_peak, "latency": p300_lat, "channel": "PZ"}
+
+    # ===== PLOT 3: Component peaks marked =====
+    ax = axes[1, 0]
+    ax.plot(time_ms, grand_avg[pz_idx, :], "b-", linewidth=2.5, alpha=0.7, label="Pz")
+
+    colors = {
+        "P1": "green",
+        "N1": "purple",
+        "P2": "orange",
+        "N2": "brown",
+        "P300": "red",
+    }
+
+    for comp_name, comp_data in components.items():
+        lat = comp_data["latency"]
+        peak = comp_data["peak"]
+        color = colors.get(comp_name, "black")
+
+        ax.plot(
+            lat,
+            peak,
+            "o",
+            markersize=12,
+            color=color,
+            label=f"{comp_name}: {peak:.2f}μV @ {lat:.0f}ms",
+            zorder=5,
+        )
+        ax.axvline(x=lat, color=color, linestyle="--", alpha=0.3)
+
+    ax.axhline(y=0, color="k", linestyle="--", alpha=0.5)
+    ax.set_xlabel("Time (ms)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Amplitude (μV)", fontsize=12, fontweight="bold")
+    ax.set_title("Identified Components at Pz", fontsize=14, fontweight="bold")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim([0, 600])
+
+    # ===== PLOT 4: Topography at N1 peak =====
+    ax = axes[1, 1]
+    if "N1" in components:
+        n1_time_idx = np.argmin(np.abs(time_ms - components["N1"]["latency"]))
+        voltage_at_n1 = grand_avg[:, n1_time_idx]
+
+        colors_topo = ["blue" if v < 0 else "red" for v in voltage_at_n1]
+        bars = ax.bar(
+            range(len(channel_labels)),
+            voltage_at_n1,
+            color=colors_topo,
+            alpha=0.7,
+            edgecolor="black",
+        )
+
+        ax.axhline(y=0, color="k", linestyle="-", linewidth=2)
+        ax.set_xticks(range(len(channel_labels)))
+        ax.set_xticklabels(channel_labels, rotation=45, ha="right", fontsize=8)
+        ax.set_ylabel("Amplitude (μV)", fontsize=12, fontweight="bold")
+        ax.set_title(
+            f"Scalp Distribution at N1 Peak ({components['N1']['latency']:.0f}ms)",
+            fontsize=13,
+            fontweight="bold",
+        )
+        ax.grid(True, alpha=0.3, axis="y")
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "N1 not detected",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        ax.axis("off")
+
+    # ===== PLOT 5: Comparison table =====
+    ax = axes[2, 0]
+    ax.axis("off")
+
+    table_data = []
+    table_data.append(["Component", "Peak (μV)", "Latency (ms)", "Channel", "Present?"])
+    table_data.append(["-" * 10, "-" * 10, "-" * 12, "-" * 8, "-" * 9])
+
+    for comp_name in ["P1", "N1", "P2", "N2", "P300"]:
+        if comp_name in components:
+            data = components[comp_name]
+            present = "✓" if abs(data["peak"]) > 1 else "?"
+            table_data.append(
+                [
+                    comp_name,
+                    f"{data['peak']:.2f}",
+                    f"{data['latency']:.0f}",
+                    data["channel"],
+                    present,
+                ]
+            )
+        else:
+            table_data.append([comp_name, "N/A", "N/A", "N/A", "✗"])
+
+    table = ax.table(
+        cellText=table_data,
+        cellLoc="center",
+        loc="center",
+        colWidths=[0.15, 0.15, 0.2, 0.15, 0.15],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2)
+
+    # Color code header
+    for i in range(5):
+        table[(0, i)].set_facecolor("#4CAF50")
+        table[(0, i)].set_text_props(weight="bold", color="white")
+
+    ax.set_title("Component Summary", fontsize=14, fontweight="bold", pad=20)
+
+    # ===== PLOT 6: Interpretation =====
+    ax = axes[2, 1]
+    ax.axis("off")
+
+    interpretation = []
+    interpretation.append("COMPONENT INTERPRETATION:\n")
+
+    if "N1" in components:
+        n1 = components["N1"]
+        interpretation.append(
+            f"✓ N1 PRESENT: {n1['peak']:.2f}μV @ {n1['latency']:.0f}ms"
+        )
+        interpretation.append(f"   Location: {n1['channel']}")
+        interpretation.append(f"   Function: Early sensory processing")
+        if n1["peak"] < -1:
+            interpretation.append(f"   This is the NEGATIVE peak before P300\n")
+        else:
+            interpretation.append(f"   ⚠️ Very weak (< 1μV)\n")
+    else:
+        interpretation.append(f"✗ N1 NOT DETECTED\n")
+
+    if "P2" in components:
+        p2 = components["P2"]
+        interpretation.append(
+            f"✓ P2 PRESENT: {p2['peak']:.2f}μV @ {p2['latency']:.0f}ms"
+        )
+        interpretation.append(f"   Location: {p2['channel']}")
+        interpretation.append(f"   Function: Attention orienting\n")
+
+    if "N2" in components and components["N2"]["peak"] < -1:
+        n2 = components["N2"]
+        interpretation.append(
+            f"✓ N2 PRESENT: {n2['peak']:.2f}μV @ {n2['latency']:.0f}ms"
+        )
+        interpretation.append(f"   Location: {n2['channel']} (frontal)")
+        interpretation.append(f"   Function: Conflict detection\n")
+    else:
+        interpretation.append(f"✗ N2 ABSENT (expected for target detection)\n")
+
+    if "P300" in components:
+        p300 = components["P300"]
+        interpretation.append(
+            f"✓ P300 PRESENT: {p300['peak']:.2f}μV @ {p300['latency']:.0f}ms"
+        )
+        interpretation.append(f"   Location: {p300['channel']} (parietal)")
+        interpretation.append(f"   Function: Target evaluation\n")
+
+    interpretation.append("\nCONCLUSION:")
+    if "N1" in components and components["N1"]["peak"] < -1:
+        interpretation.append("The negative peak before P300 is N1,")
+        interpretation.append("reflecting early sensory/attention processing.")
+        interpretation.append("\nN1-P300 correlation would measure:")
+        interpretation.append("  Early attention → Later evaluation")
+    elif "P2" in components:
+        interpretation.append("Main early component is P2 (positive),")
+        interpretation.append("suggesting attention-driven processing.")
+    else:
+        interpretation.append("No clear early negative component.")
+
+    ax.text(
+        0.05,
+        0.95,
+        "\n".join(interpretation),
+        transform=ax.transAxes,
+        verticalalignment="top",
+        fontsize=10,
+        family="monospace",
+        bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8),
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+    # ===== PRINT SUMMARY =====
+    print("\n" + "=" * 70)
+    print("EARLY COMPONENT ANALYSIS")
+    print("=" * 70)
+
+    for comp_name, comp_data in components.items():
+        print(f"\n{comp_name}:")
+        print(f"  Peak: {comp_data['peak']:.2f} μV")
+        print(f"  Latency: {comp_data['latency']:.0f} ms")
+        print(f"  Channel: {comp_data['channel']}")
+
+    print("\n" + "=" * 70)
+
+    return components
+
+
+def hemispheric_lateralization_analysis(
+    epochs,
+    times,
+    labels,
+    left_channels=["P3", "CP1", "C3"],
+    right_channels=["P4", "CP2", "C4"],
+):
+    """
+    Compare left vs right hemisphere P300 responses
+
+    Lateralization Index (LI) = (Left - Right) / (Left + Right)
+    LI > 0: Left dominance
+    LI < 0: Right dominance
+    """
+    from scipy import stats
+
+    # Find channel indices
+    labels_upper = [l.upper() for l in labels]
+    left_idx = [
+        labels_upper.index(ch.upper())
+        for ch in left_channels
+        if ch.upper() in labels_upper
+    ]
+    right_idx = [
+        labels_upper.index(ch.upper())
+        for ch in right_channels
+        if ch.upper() in labels_upper
+    ]
+
+    if not left_idx or not right_idx:
+        raise ValueError("Could not find matching left/right channels")
+
+    # Average left and right hemispheres
+    left_data = epochs[:, left_idx, :].mean(axis=1)  # (samples, trials)
+    right_data = epochs[:, right_idx, :].mean(axis=1)
+
+    # Grand averages
+    left_avg = left_data.mean(axis=1)
+    right_avg = right_data.mean(axis=1)
+
+    # Compute lateralization index per trial
+    p300_window = (times >= 300) & (times <= 600)
+    left_p300 = np.max(left_data[p300_window, :], axis=0)
+    right_p300 = np.max(right_data[p300_window, :], axis=0)
+
+    li = (left_p300 - right_p300) / (left_p300 + right_p300 + 1e-10)
+
+    # Statistical test
+    t_stat, p_val = stats.ttest_rel(left_p300, right_p300)
+
+    # Plot
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    # 1. Left vs Right waveforms
+    ax = axes[0, 0]
+    ax.plot(times, left_avg, "b-", linewidth=2.5, label="Left Hemisphere", alpha=0.8)
+    ax.plot(times, right_avg, "r-", linewidth=2.5, label="Right Hemisphere", alpha=0.8)
+    ax.axvspan(300, 600, alpha=0.1, color="yellow", label="P300 window")
+    ax.axhline(0, color="k", linestyle="-", linewidth=0.5)
+    ax.axvline(0, color="k", linestyle="--", linewidth=1)
+    ax.set_xlabel("Time (ms)")
+    ax.set_ylabel("Amplitude (µV)")
+    ax.set_title("Hemispheric P300 Comparison")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # 2. Lateralization index distribution
+    ax = axes[0, 1]
+    ax.hist(li, bins=20, edgecolor="black", alpha=0.7, color="purple")
+    ax.axvline(0, color="k", linestyle="-", linewidth=2, label="No lateralization")
+    ax.axvline(
+        np.mean(li),
+        color="r",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mean LI: {np.mean(li):.3f}",
+    )
+    ax.set_xlabel("Lateralization Index")
+    ax.set_ylabel("Count")
+    ax.set_title(f"Lateralization Distribution\n(t={t_stat:.2f}, p={p_val:.4f})")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # 3. Left vs Right amplitude scatter
+    ax = axes[1, 0]
+    ax.scatter(left_p300, right_p300, alpha=0.6, s=40)
+
+    # Unity line
+    max_val = max(left_p300.max(), right_p300.max())
+    ax.plot([0, max_val], [0, max_val], "k--", linewidth=1, label="Equal")
+
+    # Correlation
+    corr, p_corr = stats.pearsonr(left_p300, right_p300)
+    ax.text(
+        0.05,
+        0.95,
+        f"r = {corr:.3f}\np = {p_corr:.3g}",
+        transform=ax.transAxes,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+    )
+
+    ax.set_xlabel("Left Hemisphere P300 (µV)")
+    ax.set_ylabel("Right Hemisphere P300 (µV)")
+    ax.set_title("Left vs Right P300 Amplitude")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # 4. Box plot + statistical test
+    ax = axes[1, 1]
+    bp = ax.boxplot(
+        [left_p300, right_p300], labels=["Left", "Right"], patch_artist=True
+    )
+    bp["boxes"][0].set_facecolor("lightblue")
+    bp["boxes"][1].set_facecolor("lightcoral")
+
+    # Add significance indicator
+    if p_val < 0.001:
+        sig_str = "***"
+    elif p_val < 0.01:
+        sig_str = "**"
+    elif p_val < 0.05:
+        sig_str = "*"
+    else:
+        sig_str = "ns"
+
+    y_max = max(left_p300.max(), right_p300.max())
+    ax.plot([1, 2], [y_max * 1.1, y_max * 1.1], "k-", linewidth=1.5)
+    ax.text(1.5, y_max * 1.15, sig_str, ha="center", fontsize=16)
+
+    ax.set_ylabel("P300 Amplitude (µV)")
+    ax.set_title(f"Hemisphere Comparison\n(p = {p_val:.4f})")
+    ax.grid(True, alpha=0.3, axis="y")
+
+    plt.suptitle("Hemispheric Lateralization Analysis", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+
+    interpretation = (
+        "Left-lateralized"
+        if np.mean(li) > 0.1
+        else "Right-lateralized" if np.mean(li) < -0.1 else "Bilateral (symmetric)"
+    )
+
+    return fig, {
+        "lateralization_index": li,
+        "mean_li": np.mean(li),
+        "left_p300": left_p300,
+        "right_p300": right_p300,
+        "t_stat": t_stat,
+        "p_value": p_val,
+        "interpretation": interpretation,
+    }

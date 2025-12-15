@@ -187,149 +187,56 @@ def cpp_latency_distribution_analysis(
 
 
 def cpp_buildup_rate_analysis(
-    epochs, times, channel_indices, baseline_window=(-200, 0), buildup_window=(0, 500)
+    all_subjects_data,
+    condition_key,
+    times,
+    channel_indices,
+    baseline_window=(-200, 0),
+    buildup_window=(0, 500),
 ):
     """
-    Analyze CPP buildup rate (slope of accumulation)
-
-    Parameters:
-        epochs: (samples, channels, trials)
-        times: time vector in ms
-        channel_indices: CPP channels to average
-        baseline_window: time for baseline
-        buildup_window: time window to compute slope
+    Analyze CPP buildup rate using mixed effects models.
     """
-    # Average across CPP channels
-    if len(channel_indices) > 1:
-        data = epochs[:, channel_indices, :].mean(axis=1)
-    else:
-        data = epochs[:, channel_indices[0], :]
+    import pandas as pd
+    from statsmodels.regression.mixed_linear_model import MixedLM
 
-    # Baseline correction
-    baseline_mask = (times >= baseline_window[0]) & (times <= baseline_window[1])
-    baseline = data[baseline_mask, :].mean(axis=0)
-    data_corrected = data - baseline
+    data_list = []
 
-    # Get buildup window
-    buildup_mask = (times >= buildup_window[0]) & (times <= buildup_window[1])
-    buildup_times = times[buildup_mask]
-    buildup_data = data_corrected[buildup_mask, :]
+    for subj_id, subj_data in all_subjects_data.items():
+        epochs = subj_data[condition_key]
 
-    # Compute slope for each trial
-    slopes = []
-    for trial in range(buildup_data.shape[1]):
-        # Linear fit
-        coeffs = np.polyfit(buildup_times, buildup_data[:, trial], 1)
-        slopes.append(coeffs[0])  # slope in µV/ms
+        # Average across CPP channels
+        if len(channel_indices) > 1:
+            data = epochs[:, channel_indices, :].mean(axis=1)
+        else:
+            data = epochs[:, channel_indices[0], :]
 
-    slopes = np.array(slopes)
+        # Baseline correction
+        baseline_mask = (times >= baseline_window[0]) & (times <= baseline_window[1])
+        baseline = data[baseline_mask, :].mean(axis=0)
+        data_corrected = data - baseline
 
-    # Average CPP waveform
-    avg_cpp = data_corrected.mean(axis=1)
+        # Get buildup window
+        buildup_mask = (times >= buildup_window[0]) & (times <= buildup_window[1])
+        buildup_times = times[buildup_mask]
+        buildup_data = data_corrected[buildup_mask, :]
 
-    # Plot
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        # Compute slope for each trial
+        for trial in range(buildup_data.shape[1]):
+            coeffs = np.polyfit(buildup_times, buildup_data[:, trial], 1)
+            slope = coeffs[0] * 1000  # Convert to µV/s
 
-    # 1. Average CPP with buildup window highlighted
-    ax = axes[0, 0]
-    ax.plot(times, avg_cpp, "b-", linewidth=2, label="Average CPP")
-    ax.axvspan(
-        buildup_window[0],
-        buildup_window[1],
-        alpha=0.2,
-        color="green",
-        label="Buildup window",
-    )
-    ax.axhline(0, color="k", linestyle="-", linewidth=0.5)
-    ax.axvline(0, color="k", linestyle="--", linewidth=1)
-    ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Amplitude (µV)")
-    ax.set_title("Average CPP Waveform")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+            data_list.append({"subject": subj_id, "trial": trial, "slope": slope})
 
-    # 2. Buildup rate distribution
-    ax = axes[0, 1]
-    ax.hist(slopes * 1000, bins=20, edgecolor="black", alpha=0.7)  # convert to µV/s
-    ax.axvline(
-        np.mean(slopes) * 1000,
-        color="r",
-        linestyle="--",
-        linewidth=2,
-        label=f"Mean: {np.mean(slopes)*1000:.2f} µV/s",
-    )
-    ax.set_xlabel("CPP Buildup Rate (µV/s)")
-    ax.set_ylabel("Count")
-    ax.set_title(f"Buildup Rate Distribution\n(SD = {np.std(slopes)*1000:.2f} µV/s)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    df = pd.DataFrame(data_list)
 
-    # 3. Buildup rate across trials
-    ax = axes[1, 0]
-    trial_nums = np.arange(1, len(slopes) + 1)
-    ax.plot(trial_nums, slopes * 1000, "o-", alpha=0.6, markersize=4)
-    ax.set_xlabel("Trial Number")
-    ax.set_ylabel("Buildup Rate (µV/s)")
-    ax.set_title("CPP Buildup Rate Across Trials")
-    ax.grid(True, alpha=0.3)
+    # Subject-level means
+    subject_slopes = df.groupby("subject")["slope"].mean()
 
-    # Trend
-    z = np.polyfit(trial_nums, slopes * 1000, 1)
-    p = np.poly1d(z)
-    ax.plot(
-        trial_nums,
-        p(trial_nums),
-        "r--",
-        linewidth=2,
-        alpha=0.8,
-        label=f"Slope: {z[0]:.3f} (µV/s)/trial",
-    )
-    ax.legend()
+    print(f"\n=== CPP Buildup Rate Analysis ===")
+    print(f"Mean slope: {subject_slopes.mean():.2f} ± {subject_slopes.std():.2f} µV/s")
 
-    # 4. Example single trials (fast vs slow buildup)
-    ax = axes[1, 1]
-
-    # Find fastest and slowest buildup trials
-    fast_trials = np.argsort(slopes)[-5:]  # 5 fastest
-    slow_trials = np.argsort(slopes)[:5]  # 5 slowest
-
-    for trial in fast_trials:
-        ax.plot(times, data_corrected[:, trial], "b-", alpha=0.3, linewidth=1)
-    for trial in slow_trials:
-        ax.plot(times, data_corrected[:, trial], "r-", alpha=0.3, linewidth=1)
-
-    # Plot averages
-    ax.plot(
-        times,
-        data_corrected[:, fast_trials].mean(axis=1),
-        "b-",
-        linewidth=2.5,
-        label=f"Fast buildup (top 5)",
-    )
-    ax.plot(
-        times,
-        data_corrected[:, slow_trials].mean(axis=1),
-        "r-",
-        linewidth=2.5,
-        label=f"Slow buildup (bottom 5)",
-    )
-
-    ax.axhline(0, color="k", linestyle="-", linewidth=0.5)
-    ax.axvline(0, color="k", linestyle="--", linewidth=1)
-    ax.axvspan(buildup_window[0], buildup_window[1], alpha=0.1, color="green")
-    ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Amplitude (µV)")
-    ax.set_title("Fast vs Slow CPP Buildup")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    return fig, {
-        "slopes": slopes,
-        "mean_slope": np.mean(slopes) * 1000,  # µV/s
-        "std_slope": np.std(slopes) * 1000,
-    }
+    return df, subject_slopes
 
 
 def compare_cpp_conditions(cpp_pre, cpp_post, cpp_online, times, channel_indices):
@@ -417,20 +324,22 @@ def detect_cpp_onset(
     signal,
     times,
     baseline_window=(-200, 0),
-    search_window=(0, 400),
-    threshold_method="derivative",
+    search_window=(100, 400),
+    threshold_method="sustained_positive",
     smooth_window=51,
+    min_sustained_duration=50,
 ):
     """
-    Detect CPP onset - when evidence accumulation begins
+    Detect CPP onset - when sustained positive evidence accumulation begins
 
     Parameters:
         signal: 1D array (samples,) - single trial or average
         times: time vector in ms
         baseline_window: for establishing baseline
-        search_window: where to look for onset
-        threshold_method: 'derivative' or 'amplitude'
+        search_window: where to look for onset (start later to avoid early noise)
+        threshold_method: 'sustained_positive', 'derivative', or 'amplitude'
         smooth_window: samples for smoothing (must be odd)
+        min_sustained_duration: minimum duration (ms) of sustained increase
 
     Returns:
         onset_time: time in ms when CPP starts
@@ -448,44 +357,81 @@ def detect_cpp_onset(
     # Smooth the signal
     signal_smooth = savgol_filter(signal_corrected, smooth_window, 3)
 
-    # Get search window
+    # Get search window - START LATER to avoid N200
     search_mask = (times >= search_window[0]) & (times <= search_window[1])
     search_times = times[search_mask]
     search_signal = signal_smooth[search_mask]
 
-    if threshold_method == "derivative":
+    if len(search_signal) == 0:
+        raise ValueError(f"Search window {search_window} has no samples")
+
+    dt = times[1] - times[0]  # sampling interval
+
+    if threshold_method == "sustained_positive":
+        # NEW METHOD: Find where signal becomes positive AND stays positive
+
+        # 1. Signal must be positive (evidence accumulation has begun)
+        positive_mask = search_signal > 0
+
+        if not np.any(positive_mask):
+            # Fallback: use minimum point (N200 trough) + 50ms
+            min_idx = np.argmin(search_signal)
+            onset_idx_local = min(min_idx + int(50 / dt), len(search_signal) - 1)
+        else:
+            # 2. Find first point where signal goes positive and STAYS positive
+            min_sustained_samples = int(min_sustained_duration / dt)
+            onset_idx_local = None
+
+            for i in range(len(search_signal) - min_sustained_samples):
+                if np.all(search_signal[i : i + min_sustained_samples] > 0):
+                    onset_idx_local = i
+                    break
+
+            if onset_idx_local is None:
+                # Fallback: first positive crossing
+                positive_crossings = np.where(positive_mask)[0]
+                onset_idx_local = (
+                    positive_crossings[0] if len(positive_crossings) > 0 else 0
+                )
+
+    elif threshold_method == "derivative":
         # Find when derivative becomes consistently positive
-        # (evidence starts accumulating)
-        dt = times[1] - times[0]  # sampling interval
         derivative = np.gradient(search_signal, dt)
         derivative_smooth = savgol_filter(
             derivative, min(31, len(derivative) // 2 * 2 + 1), 2
         )
 
-        # Find first point where derivative stays positive for at least 50ms
-        window_samples = int(50 / dt)  # 50ms window
+        # Must be positive for at least min_sustained_duration
+        window_samples = int(min_sustained_duration / dt)
         onset_idx_local = None
 
         for i in range(len(derivative_smooth) - window_samples):
-            if np.all(derivative_smooth[i : i + window_samples] > 0):
+            if (
+                np.all(derivative_smooth[i : i + window_samples] > 0)
+                and search_signal[i] > 0
+            ):
                 onset_idx_local = i
                 break
 
         if onset_idx_local is None:
-            # Fallback: use maximum derivative point
+            # Fallback: maximum derivative point (steepest ascent)
             onset_idx_local = np.argmax(derivative_smooth)
 
     elif threshold_method == "amplitude":
-        # Find when signal crosses 50% of peak amplitude
+        # Find when signal crosses a threshold (e.g., 30% of peak amplitude)
         peak_amp = np.max(search_signal)
-        threshold = 0.5 * peak_amp
-
-        # Find first crossing
-        crossings = np.where(search_signal > threshold)[0]
-        onset_idx_local = crossings[0] if len(crossings) > 0 else 0
+        if peak_amp <= 0:
+            # No positive peak - fallback to minimum + offset
+            onset_idx_local = np.argmin(search_signal)
+        else:
+            threshold = 0.3 * peak_amp  # 30% of peak
+            crossings = np.where(search_signal > threshold)[0]
+            onset_idx_local = crossings[0] if len(crossings) > 0 else 0
 
     else:
-        raise ValueError("threshold_method must be 'derivative' or 'amplitude'")
+        raise ValueError(
+            "threshold_method must be 'sustained_positive', 'derivative', or 'amplitude'"
+        )
 
     # Convert back to original time indexing
     onset_time = search_times[onset_idx_local]
@@ -495,462 +441,330 @@ def detect_cpp_onset(
 
 
 def cpp_onset_analysis(
-    epochs, times, channel_indices, baseline_window=(-200, 0), search_window=(0, 400)
+    all_subjects_data,
+    condition_key,
+    times,
+    channel_indices,
+    baseline_window=(-200, 0),
+    search_window=(0, 400),
 ):
     """
-    Analyze CPP onset across trials
+    Analyze CPP onset across subjects using mixed effects models.
 
     Parameters:
-        epochs: (samples, channels, trials)
-        times: time vector in ms
-        channel_indices: CPP channels to average
-
-    Returns:
-        fig, stats_dict with onset times per trial
+    -----------
+    all_subjects_data : dict
+        Dictionary with subject IDs as keys
+    condition_key : str
+        e.g., 'nback_pre_nontarget_all' (CPP from non-targets)
+    times : array
+        Time vector in ms
+    channel_indices : list
+        CPP channels to average
     """
-    # Average across CPP channels
-    if len(channel_indices) > 1:
-        data = epochs[:, channel_indices, :].mean(axis=1)  # (samples, trials)
-    else:
-        data = epochs[:, channel_indices[0], :]
+    import pandas as pd
+    from statsmodels.regression.mixed_linear_model import MixedLM
 
-    # Detect onset for each trial
-    onset_times = []
-    onset_indices = []
+    # Collect onset times for all subjects
+    data_list = []
 
-    for trial in range(data.shape[1]):
-        try:
-            onset_t, onset_idx = detect_cpp_onset(
-                data[:, trial],
-                times,
-                baseline_window=baseline_window,
-                search_window=search_window,
-                threshold_method="derivative",
-            )
-            onset_times.append(onset_t)
-            onset_indices.append(onset_idx)
-        except Exception as e:
-            print(f"Warning: Could not detect onset for trial {trial}: {e}")
-            onset_times.append(np.nan)
-            onset_indices.append(np.nan)
+    for subj_id, subj_data in all_subjects_data.items():
+        # Extract CPP data: (time, channels, trials)
+        epochs = subj_data[condition_key]
 
-    onset_times = np.array(onset_times)
-    onset_times = onset_times[~np.isnan(onset_times)]  # Remove failed detections
+        # Average across CPP channels
+        if len(channel_indices) > 1:
+            data = epochs[:, channel_indices, :].mean(axis=1)  # (time, trials)
+        else:
+            data = epochs[:, channel_indices[0], :]
 
-    # Statistics
-    mean_onset = np.mean(onset_times)
-    std_onset = np.std(onset_times)
-    median_onset = np.median(onset_times)
+        # Detect onset for each trial
+        for trial in range(data.shape[1]):
+            try:
+                onset_t, onset_idx = detect_cpp_onset(
+                    data[:, trial],
+                    times,
+                    baseline_window,
+                    search_window,
+                    threshold_method="sustained_positive",
+                    min_sustained_duration=50,
+                )
 
-    # Average CPP for visualization
-    avg_cpp = data.mean(axis=1)
-    avg_onset_t, avg_onset_idx = detect_cpp_onset(
-        avg_cpp, times, baseline_window, search_window, "derivative"
+                data_list.append(
+                    {"subject": subj_id, "trial": trial, "onset_time": onset_t}
+                )
+            except:
+                continue
+
+    df = pd.DataFrame(data_list)
+
+    # Subject-level means
+    subject_onsets = df.groupby("subject")["onset_time"].mean()
+
+    print(f"\n=== CPP Onset Analysis ===")
+    print(
+        f"Mean onset across subjects: {subject_onsets.mean():.2f} ± {subject_onsets.std():.2f} ms"
     )
+    print(f"Subjects: {len(subject_onsets)}")
 
-    # Create figure
-    fig = plt.figure(figsize=(14, 10))
-    gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
+    # One-sample t-test: Is onset different from a theoretical value (e.g., 200ms)?
+    from scipy import stats
 
-    # 1. Average CPP with detected onset
-    ax1 = fig.add_subplot(gs[0, :])
-    ax1.plot(times, avg_cpp, "b-", linewidth=2.5, label="Average CPP")
-    ax1.axvline(
-        avg_onset_t,
-        color="r",
-        linestyle="--",
-        linewidth=2,
-        label=f"Onset: {avg_onset_t:.1f} ms",
-    )
-    ax1.axvspan(
-        search_window[0],
-        search_window[1],
-        alpha=0.1,
-        color="yellow",
-        label="Search window",
-    )
-    ax1.axhline(0, color="k", linestyle="-", linewidth=0.5)
-    ax1.axvline(0, color="k", linestyle="--", linewidth=1)
-    ax1.scatter(
-        [avg_onset_t], [avg_cpp[avg_onset_idx]], color="r", s=100, zorder=5, marker="o"
-    )
-    ax1.set_xlabel("Time (ms)", fontsize=11)
-    ax1.set_ylabel("Amplitude (µV)", fontsize=11)
-    ax1.set_title("CPP with Detected Onset", fontsize=13, fontweight="bold")
-    ax1.legend(loc="best")
-    ax1.grid(True, alpha=0.3)
+    t_stat, p_val = stats.ttest_1samp(subject_onsets, 200)  # Test against 200ms
+    print(f"Test vs 200ms: t = {t_stat:.3f}, p = {p_val:.4f}")
 
-    # 2. Onset time distribution
-    ax2 = fig.add_subplot(gs[1, 0])
-    ax2.hist(onset_times, bins=20, edgecolor="black", alpha=0.7, color="skyblue")
-    ax2.axvline(
-        mean_onset,
-        color="r",
-        linestyle="--",
-        linewidth=2,
-        label=f"Mean: {mean_onset:.1f} ms",
-    )
-    ax2.axvline(
-        median_onset,
-        color="g",
-        linestyle="--",
-        linewidth=2,
-        label=f"Median: {median_onset:.1f} ms",
-    )
-    ax2.set_xlabel("CPP Onset Time (ms)")
-    ax2.set_ylabel("Count")
-    ax2.set_title(f"Onset Distribution\n(SD = {std_onset:.1f} ms)")
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-
-    # 3. Onset across trials (drift check)
-    ax3 = fig.add_subplot(gs[1, 1])
-    trial_nums = np.arange(1, len(onset_times) + 1)
-    ax3.plot(trial_nums, onset_times, "o-", alpha=0.6, markersize=4)
-    ax3.set_xlabel("Trial Number")
-    ax3.set_ylabel("CPP Onset Time (ms)")
-    ax3.set_title("Onset Timing Across Trials")
-    ax3.grid(True, alpha=0.3)
-
-    # Trend line
-    z = np.polyfit(trial_nums, onset_times, 1)
-    p = np.poly1d(z)
-    ax3.plot(
-        trial_nums,
-        p(trial_nums),
-        "r--",
-        linewidth=2,
-        alpha=0.8,
-        label=f"Slope: {z[0]:.3f} ms/trial",
-    )
-    ax3.legend()
-
-    # 4. Single-trial CPPs with onset markers
-    ax4 = fig.add_subplot(gs[2, :])
-
-    # Sort by onset time
-    valid_trials = ~np.isnan(onset_times)
-    sort_idx = np.argsort(onset_times)
-    sorted_data = data[:, sort_idx]
-    sorted_onsets = onset_times[sort_idx]
-
-    # Plot heatmap
-    im = ax4.imshow(
-        sorted_data.T,
-        aspect="auto",
-        cmap="RdBu_r",
-        extent=[times[0], times[-1], 0, len(sorted_onsets)],
-        vmin=-np.percentile(np.abs(sorted_data), 95),
-        vmax=np.percentile(np.abs(sorted_data), 95),
-    )
-
-    # Overlay onset markers
-    ax4.plot(
-        sorted_onsets,
-        np.arange(len(sorted_onsets)),
-        "k.",
-        markersize=3,
-        alpha=0.7,
-        label="Detected onset",
-    )
-
-    ax4.axvline(0, color="white", linestyle="--", linewidth=1)
-    ax4.axvspan(search_window[0], search_window[1], alpha=0.15, color="yellow")
-    ax4.set_xlabel("Time (ms)")
-    ax4.set_ylabel("Trial (sorted by onset time)")
-    ax4.set_title("Single-Trial CPPs (sorted by onset)")
-    ax4.legend(loc="upper right")
-
-    cbar = plt.colorbar(im, ax=ax4)
-    cbar.set_label("Amplitude (µV)", rotation=270, labelpad=15)
-
-    plt.suptitle(
-        f"CPP Onset Analysis (n={len(onset_times)} trials)",
-        fontsize=14,
-        fontweight="bold",
-        y=0.995,
-    )
-
-    return fig, {
-        "onset_times": onset_times,
-        "mean_onset": mean_onset,
-        "std_onset": std_onset,
-        "median_onset": median_onset,
-    }
+    return df, subject_onsets
 
 
 def compare_cpp_slopes(
-    cpp_pre, cpp_post, cpp_online, times, channel_indices, buildup_window=(0, 500)
+    all_subjects_data, times, channel_indices, buildup_window=(0, 500)
 ):
     """
-    Compare CPP buildup slopes across three conditions
+    Compare CPP buildup slopes across PRE, POST, ONLINE using MEM.
 
-    Parameters:
-        cpp_pre, cpp_post, cpp_online: (samples, channels, trials)
-        times: time vector in ms
-        channel_indices: CPP channels to average
-        buildup_window: time window for slope calculation
-
-    Returns:
-        fig, comparison statistics
+    This is the KEY analysis for your CPP results!
     """
+    import pandas as pd
+    from statsmodels.regression.mixed_linear_model import MixedLM
+    import matplotlib.pyplot as plt
 
-    def compute_slopes(data):
-        """Compute slopes for all trials in dataset"""
-        if len(channel_indices) > 1:
-            data_avg = data[:, channel_indices, :].mean(axis=1)
-        else:
-            data_avg = data[:, channel_indices[0], :]
+    # Collect slopes for all conditions
+    data_list = []
 
-        buildup_mask = (times >= buildup_window[0]) & (times <= buildup_window[1])
-        buildup_times = times[buildup_mask]
-        buildup_data = data_avg[buildup_mask, :]
-
-        slopes = []
-        for trial in range(buildup_data.shape[1]):
-            coeffs = np.polyfit(buildup_times, buildup_data[:, trial], 1)
-            slopes.append(coeffs[0] * 1000)  # Convert to µV/s
-
-        return np.array(slopes), data_avg.mean(axis=1)
-
-    # Compute slopes for each condition
-    slopes_pre, avg_pre = compute_slopes(cpp_pre)
-    slopes_post, avg_post = compute_slopes(cpp_post)
-    slopes_online, avg_online = compute_slopes(cpp_online)
-
-    # Statistics
-    mean_pre, std_pre = np.mean(slopes_pre), np.std(slopes_pre)
-    mean_post, std_post = np.mean(slopes_post), np.std(slopes_post)
-    mean_online, std_online = np.mean(slopes_online), np.std(slopes_online)
-
-    # Statistical tests
-    t_pre_post, p_pre_post = stats.ttest_ind(slopes_pre, slopes_post)
-    t_pre_online, p_pre_online = stats.ttest_ind(slopes_pre, slopes_online)
-    t_post_online, p_post_online = stats.ttest_ind(slopes_post, slopes_online)
-
-    # Create figure
-    fig = plt.figure(figsize=(14, 10))
-    gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
-
-    # 1. Average CPP waveforms with linear fits
-    ax1 = fig.add_subplot(gs[0, :])
-    ax1.plot(times, avg_pre, "b-", linewidth=2.5, label="Pre", alpha=0.7)
-    ax1.plot(times, avg_post, "r-", linewidth=2.5, label="Post", alpha=0.7)
-    ax1.plot(times, avg_online, "g-", linewidth=2.5, label="Online", alpha=0.7)
-
-    # Add linear fit lines in buildup window
-    buildup_mask = (times >= buildup_window[0]) & (times <= buildup_window[1])
-    buildup_times = times[buildup_mask]
-
-    for avg, color, label in [
-        (avg_pre, "b", "Pre fit"),
-        (avg_post, "r", "Post fit"),
-        (avg_online, "g", "Online fit"),
+    for condition in [
+        "nback_pre_nontarget_all",
+        "nback_post_nontarget_all",
+        "online_nontarget_all",
     ]:
-        coeffs = np.polyfit(buildup_times, avg[buildup_mask], 1)
-        fit_line = np.poly1d(coeffs)
-        ax1.plot(
-            buildup_times,
-            fit_line(buildup_times),
-            color=color,
-            linestyle="--",
-            linewidth=2,
-            alpha=0.5,
-        )
+        # Determine condition label
+        if "pre" in condition:
+            cond_label = "pre"
+        elif "post" in condition:
+            cond_label = "post"
+        else:
+            cond_label = "online"
 
-    ax1.axvspan(
-        buildup_window[0],
-        buildup_window[1],
-        alpha=0.1,
-        color="yellow",
-        label="Buildup window",
-    )
-    ax1.axhline(0, color="k", linestyle="-", linewidth=0.5)
-    ax1.axvline(0, color="k", linestyle="--", linewidth=1)
-    ax1.set_xlabel("Time (ms)", fontsize=11)
-    ax1.set_ylabel("Amplitude (µV)", fontsize=11)
-    ax1.set_title("CPP Waveforms with Linear Fits", fontsize=13, fontweight="bold")
-    ax1.legend(loc="best")
-    ax1.grid(True, alpha=0.3)
+        for subj_id, subj_data in all_subjects_data.items():
+            if condition not in subj_data:
+                continue
 
-    # 2. Slope distributions (overlapping histograms)
-    ax2 = fig.add_subplot(gs[1, 0])
-    bins = np.linspace(
-        min(slopes_pre.min(), slopes_post.min(), slopes_online.min()),
-        max(slopes_pre.max(), slopes_post.max(), slopes_online.max()),
-        25,
+            epochs = subj_data[condition]
+
+            # Average across CPP channels
+            if len(channel_indices) > 1:
+                data = epochs[:, channel_indices, :].mean(axis=1)
+            else:
+                data = epochs[:, channel_indices[0], :]
+
+            # Get buildup window
+            buildup_mask = (times >= buildup_window[0]) & (times <= buildup_window[1])
+            buildup_times = times[buildup_mask]
+            buildup_data = data[buildup_mask, :]
+
+            # Compute slope for each trial
+            for trial in range(buildup_data.shape[1]):
+                coeffs = np.polyfit(buildup_times, buildup_data[:, trial], 1)
+                slope = coeffs[0] * 1000  # µV/s
+
+                data_list.append(
+                    {
+                        "subject": subj_id,
+                        "trial": trial,
+                        "slope": slope,
+                        "condition": cond_label,
+                    }
+                )
+
+    df = pd.DataFrame(data_list)
+
+    # Mixed Effects Model: condition as fixed effect, subject as random effect
+    print("\n" + "=" * 70)
+    print("MIXED EFFECTS MODEL: CPP Buildup Rate")
+    print("=" * 70)
+
+    model = MixedLM.from_formula(
+        "slope ~ condition",  # Fixed effect: condition
+        data=df,
+        groups=df["subject"],  # Random effect: subject
     )
-    ax2.hist(
-        slopes_pre, bins=bins, alpha=0.5, label="Pre", color="blue", edgecolor="black"
-    )
-    ax2.hist(
-        slopes_post, bins=bins, alpha=0.5, label="Post", color="red", edgecolor="black"
-    )
-    ax2.hist(
-        slopes_online,
-        bins=bins,
-        alpha=0.5,
-        label="Online",
-        color="green",
-        edgecolor="black",
+    result = model.fit(reml=True)
+    print(result.summary())
+
+    # Subject-level means for plotting
+    subject_means = df.groupby(["subject", "condition"])["slope"].mean().unstack()
+
+    # Overall condition means
+    condition_means = df.groupby("condition")["slope"].mean()
+    condition_sems = df.groupby("condition")["slope"].sem()
+
+    print("\n" + "=" * 70)
+    print("CONDITION MEANS")
+    print("=" * 70)
+    for cond in ["pre", "post", "online"]:
+        if cond in condition_means.index:
+            print(
+                f"{cond.upper():8s}: {condition_means[cond]:6.2f} ± {condition_sems[cond]:5.2f} µV/s"
+            )
+
+    # Create figures
+    fig = create_cpp_slope_figures(df, subject_means, result)
+
+    return {
+        "df": df,
+        "mem_result": result,
+        "subject_means": subject_means,
+        "condition_means": condition_means,
+        "fig": fig,
+    }
+
+
+def create_cpp_slope_figures(df, subject_means, mem_result):
+    """Create figures for CPP slope comparison."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 1. Box plot with individual subjects
+    ax = axes[0, 0]
+
+    conditions_order = ["pre", "post", "online"]
+    data_for_box = [df[df["condition"] == c]["slope"].values for c in conditions_order]
+
+    bp = ax.boxplot(
+        data_for_box, labels=["PRE", "POST", "ONLINE"], patch_artist=True, widths=0.6
     )
 
-    ax2.axvline(mean_pre, color="b", linestyle="--", linewidth=2)
-    ax2.axvline(mean_post, color="r", linestyle="--", linewidth=2)
-    ax2.axvline(mean_online, color="g", linestyle="--", linewidth=2)
-
-    ax2.set_xlabel("CPP Buildup Rate (µV/s)")
-    ax2.set_ylabel("Count")
-    ax2.set_title("Slope Distribution Comparison")
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-
-    # 3. Box plot comparison
-    ax3 = fig.add_subplot(gs[1, 1])
-    bp = ax3.boxplot(
-        [slopes_pre, slopes_post, slopes_online],
-        labels=["Pre", "Post", "Online"],
-        patch_artist=True,
-        widths=0.6,
-    )
-
-    # Color the boxes
     colors = ["lightblue", "lightcoral", "lightgreen"]
     for patch, color in zip(bp["boxes"], colors):
         patch.set_facecolor(color)
 
-    # Add means
-    means = [mean_pre, mean_post, mean_online]
-    ax3.plot([1, 2, 3], means, "ro-", linewidth=2, markersize=8, label="Mean")
+    # Overlay individual subject means
+    for i, cond in enumerate(conditions_order):
+        if cond in subject_means.columns:
+            y_vals = subject_means[cond].values
+            x_vals = np.random.normal(i + 1, 0.04, size=len(y_vals))
+            ax.scatter(x_vals, y_vals, alpha=0.6, s=60, edgecolor="black", linewidth=1)
 
-    ax3.set_ylabel("CPP Buildup Rate (µV/s)", fontsize=11)
-    ax3.set_title("Slope Comparison (Box Plot)", fontsize=12, fontweight="bold")
-    ax3.grid(True, alpha=0.3, axis="y")
-    ax3.legend()
+    ax.set_ylabel("CPP Buildup Rate (µV/s)", fontsize=12)
+    ax.set_title("CPP Slope Across Conditions\n(Subject Averages)", fontweight="bold")
+    ax.grid(True, alpha=0.3, axis="y")
 
-    # 4. Statistical comparison table
-    ax4 = fig.add_subplot(gs[2, 0])
-    ax4.axis("off")
+    # Add significance from MEM
+    # Extract p-values from model
+    if "condition[T.post]" in mem_result.pvalues:
+        p_pre_post = mem_result.pvalues["condition[T.post]"]
+        # Add significance line
+        y_max = max([d.max() for d in data_for_box])
+        if p_pre_post < 0.05:
+            sig_str = (
+                "***" if p_pre_post < 0.001 else "**" if p_pre_post < 0.01 else "*"
+            )
+            ax.plot([1, 2], [y_max * 1.1, y_max * 1.1], "k-", linewidth=1.5)
+            ax.text(1.5, y_max * 1.15, sig_str, ha="center", fontsize=16)
 
-    table_data = [
-        ["Condition", "Mean (µV/s)", "SD (µV/s)", "N trials"],
-        ["Pre", f"{mean_pre:.2f}", f"{std_pre:.2f}", f"{len(slopes_pre)}"],
-        ["Post", f"{mean_post:.2f}", f"{std_post:.2f}", f"{len(slopes_post)}"],
-        ["Online", f"{mean_online:.2f}", f"{std_online:.2f}", f"{len(slopes_online)}"],
-        ["", "", "", ""],
-        ["Comparison", "t-statistic", "p-value", "Significant?"],
-        [
-            "Pre vs Post",
-            f"{t_pre_post:.3f}",
-            f"{p_pre_post:.4f}",
-            "✓" if p_pre_post < 0.05 else "✗",
-        ],
-        [
-            "Pre vs Online",
-            f"{t_pre_online:.3f}",
-            f"{p_pre_online:.4f}",
-            "✓" if p_pre_online < 0.05 else "✗",
-        ],
-        [
-            "Post vs Online",
-            f"{t_post_online:.3f}",
-            f"{p_post_online:.4f}",
-            "✓" if p_post_online < 0.05 else "✗",
-        ],
-    ]
+    # 2. Bar plot with MEM coefficients
+    ax = axes[0, 1]
 
-    table = ax4.table(
-        cellText=table_data, cellLoc="center", loc="center", bbox=[0, 0, 1, 1]
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 2)
+    # Extract coefficients
+    coeffs = []
+    labels = []
+    errors = []
 
-    # Style header rows
-    for i in [0, 5]:
-        for j in range(4):
-            table[(i, j)].set_facecolor("#4CAF50")
-            table[(i, j)].set_text_props(weight="bold", color="white")
+    # Intercept = PRE mean
+    coeffs.append(mem_result.params["Intercept"])
+    labels.append("PRE")
+    errors.append(mem_result.bse["Intercept"])
 
-    ax4.set_title("Statistical Summary", fontsize=12, fontweight="bold", pad=20)
-
-    # 5. Effect sizes (Cohen's d)
-    ax5 = fig.add_subplot(gs[2, 1])
-
-    def cohens_d(x, y):
-        nx, ny = len(x), len(y)
-        dof = nx + ny - 2
-        return (np.mean(x) - np.mean(y)) / np.sqrt(
-            ((nx - 1) * np.std(x, ddof=1) ** 2 + (ny - 1) * np.std(y, ddof=1) ** 2)
-            / dof
+    # POST = Intercept + condition[T.post]
+    if "condition[T.post]" in mem_result.params:
+        coeffs.append(
+            mem_result.params["Intercept"] + mem_result.params["condition[T.post]"]
+        )
+        labels.append("POST")
+        errors.append(
+            np.sqrt(
+                mem_result.bse["Intercept"] ** 2
+                + mem_result.bse["condition[T.post]"] ** 2
+            )
         )
 
-    d_pre_post = cohens_d(slopes_pre, slopes_post)
-    d_pre_online = cohens_d(slopes_pre, slopes_online)
-    d_post_online = cohens_d(slopes_post, slopes_online)
-
-    comparisons = ["Pre vs\nPost", "Pre vs\nOnline", "Post vs\nOnline"]
-    effect_sizes = [d_pre_post, d_pre_online, d_post_online]
-    colors_es = [
-        "red" if abs(d) > 0.5 else "orange" if abs(d) > 0.2 else "green"
-        for d in effect_sizes
-    ]
-
-    bars = ax5.bar(
-        comparisons, effect_sizes, color=colors_es, alpha=0.7, edgecolor="black"
-    )
-    ax5.axhline(0, color="k", linestyle="-", linewidth=1)
-    ax5.axhline(0.2, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax5.axhline(-0.2, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax5.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax5.axhline(-0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-
-    # Add value labels
-    for bar, val in zip(bars, effect_sizes):
-        height = bar.get_height()
-        ax5.text(
-            bar.get_x() + bar.get_width() / 2.0,
-            height,
-            f"{val:.2f}",
-            ha="center",
-            va="bottom" if val > 0 else "top",
-            fontweight="bold",
+    # ONLINE = Intercept + condition[T.online]
+    if "condition[T.pre]" in mem_result.params:
+        coeffs.append(
+            mem_result.params["Intercept"] + mem_result.params["condition[T.pre]"]
+        )
+        labels.append("ONLINE")
+        errors.append(
+            np.sqrt(
+                mem_result.bse["Intercept"] ** 2
+                + mem_result.bse["condition[T.pre]"] ** 2
+            )
         )
 
-    ax5.set_ylabel("Cohen's d", fontsize=11)
-    ax5.set_title(
-        "Effect Sizes\n(Small: 0.2, Medium: 0.5, Large: 0.8)",
-        fontsize=11,
-        fontweight="bold",
+    x = np.arange(len(labels))
+    bars = ax.bar(
+        x,
+        coeffs,
+        yerr=errors,
+        capsize=10,
+        color=colors[: len(labels)],
+        edgecolor="black",
+        linewidth=1.5,
+        alpha=0.7,
     )
-    ax5.grid(True, alpha=0.3, axis="y")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontweight="bold")
+    ax.set_ylabel("CPP Buildup Rate (µV/s)", fontsize=12)
+    ax.set_title("MEM Estimated Means", fontweight="bold")
+    ax.grid(True, alpha=0.3, axis="y")
+
+    # 3. Individual subject trajectories
+    ax = axes[1, 0]
+
+    for subj in subject_means.index:
+        vals = []
+        for cond in conditions_order:
+            if cond in subject_means.columns:
+                vals.append(subject_means.loc[subj, cond])
+        ax.plot(range(len(vals)), vals, "o-", alpha=0.6, linewidth=2, markersize=8)
+
+    ax.set_xticks(range(len(conditions_order)))
+    ax.set_xticklabels(["PRE", "POST", "ONLINE"], fontweight="bold")
+    ax.set_ylabel("CPP Buildup Rate (µV/s)", fontsize=12)
+    ax.set_title("Individual Subject Trajectories", fontweight="bold")
+    ax.grid(True, alpha=0.3)
+
+    # 4. Distribution comparison
+    ax = axes[1, 1]
+
+    for cond, color in zip(conditions_order, colors):
+        data = df[df["condition"] == cond]["slope"]
+        ax.hist(
+            data, bins=20, alpha=0.5, label=cond.upper(), color=color, edgecolor="black"
+        )
+
+    ax.set_xlabel("CPP Buildup Rate (µV/s)", fontsize=12)
+    ax.set_ylabel("Count", fontsize=12)
+    ax.set_title("Slope Distributions", fontweight="bold")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
     plt.suptitle(
-        "CPP Buildup Rate Comparison: Pre vs Post vs Online",
+        "CPP Buildup Rate Analysis (Mixed Effects Model)",
         fontsize=14,
         fontweight="bold",
-        y=0.995,
     )
+    plt.tight_layout()
 
-    return fig, {
-        "slopes_pre": slopes_pre,
-        "slopes_post": slopes_post,
-        "slopes_online": slopes_online,
-        "mean_pre": mean_pre,
-        "mean_post": mean_post,
-        "mean_online": mean_online,
-        "p_pre_post": p_pre_post,
-        "p_pre_online": p_pre_online,
-        "p_post_online": p_post_online,
-        "d_pre_post": d_pre_post,
-        "d_pre_online": d_pre_online,
-        "d_post_online": d_post_online,
-    }
+    return fig
 
 
 def cpp_p300_relationship(
-    cpp_epochs,
-    p300_epochs,
+    all_subjects_data,
+    condition_key_cpp,
+    condition_key_p300,
     times,
     cpp_channels,
     p300_channel,
@@ -958,307 +772,97 @@ def cpp_p300_relationship(
     p300_window=(300, 600),
 ):
     """
-    Analyze relationship between CPP and P300
+    Analyze CPP-P300 relationship using MEM.
 
     Parameters:
-        cpp_epochs: (samples, channels, trials) - NON-TARGET trials
-        p300_epochs: (samples, channels, trials) - TARGET trials
-        times: time vector in ms
-        cpp_channels: indices for CPP channels
-        p300_channel: index for P300 channel (e.g., Pz)
-        cpp_window: time window for CPP measurement
-        p300_window: time window for P300 measurement
-
-    Returns:
-        fig, correlation statistics
+    -----------
+    condition_key_cpp : str
+        e.g., 'nback_pre_nontarget_all' (CPP from non-targets)
+    condition_key_p300 : str
+        e.g., 'nback_pre_target_all' (P300 from targets)
     """
+    import pandas as pd
+    from statsmodels.regression.mixed_linear_model import MixedLM
 
-    # Extract CPP features (from non-target trials)
-    if len(cpp_channels) > 1:
-        cpp_data = cpp_epochs[:, cpp_channels, :].mean(axis=1)
-    else:
-        cpp_data = cpp_epochs[:, cpp_channels[0], :]
+    data_list = []
 
-    # Extract P300 features (from target trials)
-    p300_data = p300_epochs[:, p300_channel, :]
+    for subj_id, subj_data in all_subjects_data.items():
+        # Get CPP data (non-targets)
+        cpp_epochs = subj_data[condition_key_cpp]
+        if len(cpp_channels) > 1:
+            cpp_data = cpp_epochs[:, cpp_channels, :].mean(axis=1)
+        else:
+            cpp_data = cpp_epochs[:, cpp_channels[0], :]
 
-    # Compute CPP metrics per trial
-    cpp_mask = (times >= cpp_window[0]) & (times <= cpp_window[1])
-    cpp_window_times = times[cpp_mask]
+        # Get P300 data (targets)
+        p300_epochs = subj_data[condition_key_p300]
+        p300_data = p300_epochs[:, p300_channel, :]
 
-    cpp_amplitudes = []
-    cpp_slopes = []
+        # CPP metrics
+        cpp_mask = (times >= cpp_window[0]) & (times <= cpp_window[1])
+        cpp_window_times = times[cpp_mask]
 
-    for trial in range(cpp_data.shape[1]):
-        # Peak amplitude
-        cpp_amplitudes.append(np.max(cpp_data[cpp_mask, trial]))
+        n_cpp_trials = cpp_data.shape[1]
+        n_p300_trials = p300_data.shape[1]
+        n_trials = min(n_cpp_trials, n_p300_trials)
 
-        # Slope
-        coeffs = np.polyfit(cpp_window_times, cpp_data[cpp_mask, trial], 1)
-        cpp_slopes.append(coeffs[0] * 1000)  # µV/s
+        for trial in range(n_trials):
+            # CPP slope
+            coeffs = np.polyfit(cpp_window_times, cpp_data[cpp_mask, trial], 1)
+            cpp_slope = coeffs[0] * 1000  # µV/s
 
-    cpp_amplitudes = np.array(cpp_amplitudes)
-    cpp_slopes = np.array(cpp_slopes)
+            # CPP amplitude
+            cpp_amp = np.max(cpp_data[cpp_mask, trial])
 
-    # Compute P300 metrics per trial
-    p300_mask = (times >= p300_window[0]) & (times <= p300_window[1])
-    p300_window_times = times[p300_mask]
+            # P300 amplitude
+            p300_mask = (times >= p300_window[0]) & (times <= p300_window[1])
+            p300_amp = np.max(p300_data[p300_mask, trial])
 
-    p300_amplitudes = []
-    p300_latencies = []
+            # P300 latency
+            p300_window_times = times[p300_mask]
+            peak_idx = np.argmax(p300_data[p300_mask, trial])
+            p300_lat = p300_window_times[peak_idx]
 
-    for trial in range(p300_data.shape[1]):
-        # Peak amplitude
-        trial_p300 = p300_data[p300_mask, trial]
-        p300_amplitudes.append(np.max(trial_p300))
+            data_list.append(
+                {
+                    "subject": subj_id,
+                    "trial": trial,
+                    "cpp_slope": cpp_slope,
+                    "cpp_amp": cpp_amp,
+                    "p300_amp": p300_amp,
+                    "p300_lat": p300_lat,
+                }
+            )
 
-        # Peak latency
-        peak_idx = np.argmax(trial_p300)
-        p300_latencies.append(p300_window_times[peak_idx])
+    df = pd.DataFrame(data_list)
 
-    p300_amplitudes = np.array(p300_amplitudes)
-    p300_latencies = np.array(p300_latencies)
+    print("\n" + "=" * 70)
+    print("CPP-P300 RELATIONSHIP (Mixed Effects Models)")
+    print("=" * 70)
 
-    # Match trial counts (use minimum)
-    n_trials = min(len(cpp_amplitudes), len(p300_amplitudes))
-    cpp_amplitudes = cpp_amplitudes[:n_trials]
-    cpp_slopes = cpp_slopes[:n_trials]
-    p300_amplitudes = p300_amplitudes[:n_trials]
-    p300_latencies = p300_latencies[:n_trials]
+    # Model 1: CPP Slope → P300 Amplitude
+    print("\n=== Model 1: CPP Slope → P300 Amplitude ===")
+    model1 = MixedLM.from_formula("p300_amp ~ cpp_slope", data=df, groups=df["subject"])
+    result1 = model1.fit(reml=True)
+    print(result1.summary())
 
-    # Correlations
-    corr_amp_amp, p_amp_amp = stats.pearsonr(cpp_amplitudes, p300_amplitudes)
-    corr_slope_amp, p_slope_amp = stats.pearsonr(cpp_slopes, p300_amplitudes)
-    corr_amp_lat, p_amp_lat = stats.pearsonr(cpp_amplitudes, p300_latencies)
-    corr_slope_lat, p_slope_lat = stats.pearsonr(cpp_slopes, p300_latencies)
+    # Model 2: CPP Amplitude → P300 Amplitude
+    print("\n=== Model 2: CPP Amplitude → P300 Amplitude ===")
+    model2 = MixedLM.from_formula("p300_amp ~ cpp_amp", data=df, groups=df["subject"])
+    result2 = model2.fit(reml=True)
+    print(result2.summary())
 
-    # Create figure
-    fig = plt.figure(figsize=(14, 10))
-    gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
+    # Model 3: CPP Slope → P300 Latency
+    print("\n=== Model 3: CPP Slope → P300 Latency ===")
+    model3 = MixedLM.from_formula("p300_lat ~ cpp_slope", data=df, groups=df["subject"])
+    result3 = model3.fit(reml=True)
+    print(result3.summary())
 
-    # 1. CPP Amplitude vs P300 Amplitude
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax1.scatter(cpp_amplitudes, p300_amplitudes, alpha=0.6, s=40)
-
-    # Fit line
-    z = np.polyfit(cpp_amplitudes, p300_amplitudes, 1)
-    p_fit = np.poly1d(z)
-    x_fit = np.linspace(cpp_amplitudes.min(), cpp_amplitudes.max(), 100)
-    ax1.plot(x_fit, p_fit(x_fit), "r--", linewidth=2, alpha=0.8)
-
-    ax1.text(
-        0.05,
-        0.95,
-        f"r = {corr_amp_amp:.3f}\np = {p_amp_amp:.3g}",
-        transform=ax1.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-    )
-
-    ax1.set_xlabel("CPP Amplitude (µV)", fontsize=11)
-    ax1.set_ylabel("P300 Amplitude (µV)", fontsize=11)
-    ax1.set_title("CPP Amplitude vs P300 Amplitude", fontsize=12, fontweight="bold")
-    ax1.grid(True, alpha=0.3)
-
-    # 2. CPP Slope vs P300 Amplitude
-    ax2 = fig.add_subplot(gs[0, 1])
-    ax2.scatter(cpp_slopes, p300_amplitudes, alpha=0.6, s=40, color="green")
-
-    z = np.polyfit(cpp_slopes, p300_amplitudes, 1)
-    p_fit = np.poly1d(z)
-    x_fit = np.linspace(cpp_slopes.min(), cpp_slopes.max(), 100)
-    ax2.plot(x_fit, p_fit(x_fit), "r--", linewidth=2, alpha=0.8)
-
-    ax2.text(
-        0.05,
-        0.95,
-        f"r = {corr_slope_amp:.3f}\np = {p_slope_amp:.3g}",
-        transform=ax2.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-    )
-
-    ax2.set_xlabel("CPP Buildup Rate (µV/s)", fontsize=11)
-    ax2.set_ylabel("P300 Amplitude (µV)", fontsize=11)
-    ax2.set_title("CPP Slope vs P300 Amplitude", fontsize=12, fontweight="bold")
-    ax2.grid(True, alpha=0.3)
-
-    # 3. CPP Amplitude vs P300 Latency
-    ax3 = fig.add_subplot(gs[1, 0])
-    ax3.scatter(cpp_amplitudes, p300_latencies, alpha=0.6, s=40, color="purple")
-
-    z = np.polyfit(cpp_amplitudes, p300_latencies, 1)
-    p_fit = np.poly1d(z)
-    x_fit = np.linspace(cpp_amplitudes.min(), cpp_amplitudes.max(), 100)
-    ax3.plot(x_fit, p_fit(x_fit), "r--", linewidth=2, alpha=0.8)
-
-    ax3.text(
-        0.05,
-        0.95,
-        f"r = {corr_amp_lat:.3f}\np = {p_amp_lat:.3g}",
-        transform=ax3.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-    )
-
-    ax3.set_xlabel("CPP Amplitude (µV)", fontsize=11)
-    ax3.set_ylabel("P300 Latency (ms)", fontsize=11)
-    ax3.set_title("CPP Amplitude vs P300 Latency", fontsize=12, fontweight="bold")
-    ax3.grid(True, alpha=0.3)
-
-    # 4. CPP Slope vs P300 Latency
-    ax4 = fig.add_subplot(gs[1, 1])
-    ax4.scatter(cpp_slopes, p300_latencies, alpha=0.6, s=40, color="orange")
-
-    z = np.polyfit(cpp_slopes, p300_latencies, 1)
-    p_fit = np.poly1d(z)
-    x_fit = np.linspace(cpp_slopes.min(), cpp_slopes.max(), 100)
-    ax4.plot(x_fit, p_fit(x_fit), "r--", linewidth=2, alpha=0.8)
-
-    ax4.text(
-        0.05,
-        0.95,
-        f"r = {corr_slope_lat:.3f}\np = {p_slope_lat:.3g}",
-        transform=ax4.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-    )
-
-    ax4.set_xlabel("CPP Buildup Rate (µV/s)", fontsize=11)
-    ax4.set_ylabel("P300 Latency (ms)", fontsize=11)
-    ax4.set_title("CPP Slope vs P300 Latency", fontsize=12, fontweight="bold")
-    ax4.grid(True, alpha=0.3)
-
-    # 5. Average waveforms comparison
-    ax5 = fig.add_subplot(gs[2, 0])
-
-    cpp_avg = cpp_data.mean(axis=1)
-    p300_avg = p300_data.mean(axis=1)
-
-    # Normalize for comparison
-    cpp_norm = (cpp_avg - cpp_avg.min()) / (cpp_avg.max() - cpp_avg.min())
-    p300_norm = (p300_avg - p300_avg.min()) / (p300_avg.max() - p300_avg.min())
-
-    ax5.plot(times, cpp_norm, "b-", linewidth=2.5, label="CPP (normalized)", alpha=0.7)
-    ax5.plot(
-        times, p300_norm, "r-", linewidth=2.5, label="P300 (normalized)", alpha=0.7
-    )
-
-    ax5.axvspan(
-        cpp_window[0], cpp_window[1], alpha=0.1, color="blue", label="CPP window"
-    )
-    ax5.axvspan(
-        p300_window[0], p300_window[1], alpha=0.1, color="red", label="P300 window"
-    )
-    ax5.axvline(0, color="k", linestyle="--", linewidth=1)
-    ax5.set_xlabel("Time (ms)", fontsize=11)
-    ax5.set_ylabel("Normalized Amplitude", fontsize=11)
-    ax5.set_title("CPP vs P300 Time Courses", fontsize=12, fontweight="bold")
-    ax5.legend(loc="best")
-    ax5.grid(True, alpha=0.3)
-
-    # 6. Correlation summary table
-    ax6 = fig.add_subplot(gs[2, 1])
-    ax6.axis("off")
-
-    table_data = [
-        ["Relationship", "r", "p-value", "Interpretation"],
-        [
-            "CPP Amp → P300 Amp",
-            f"{corr_amp_amp:.3f}",
-            f"{p_amp_amp:.4f}",
-            (
-                "Strong +"
-                if corr_amp_amp > 0.5 and p_amp_amp < 0.05
-                else (
-                    "Moderate +"
-                    if corr_amp_amp > 0.3 and p_amp_amp < 0.05
-                    else "Weak/None"
-                )
-            ),
-        ],
-        [
-            "CPP Slope → P300 Amp",
-            f"{corr_slope_amp:.3f}",
-            f"{p_slope_amp:.4f}",
-            (
-                "Strong +"
-                if corr_slope_amp > 0.5 and p_slope_amp < 0.05
-                else (
-                    "Moderate +"
-                    if corr_slope_amp > 0.3 and p_slope_amp < 0.05
-                    else "Weak/None"
-                )
-            ),
-        ],
-        [
-            "CPP Amp → P300 Lat",
-            f"{corr_amp_lat:.3f}",
-            f"{p_amp_lat:.4f}",
-            (
-                "Strong -"
-                if corr_amp_lat < -0.5 and p_amp_lat < 0.05
-                else (
-                    "Moderate -"
-                    if corr_amp_lat < -0.3 and p_amp_lat < 0.05
-                    else "Weak/None"
-                )
-            ),
-        ],
-        [
-            "CPP Slope → P300 Lat",
-            f"{corr_slope_lat:.3f}",
-            f"{p_slope_lat:.4f}",
-            (
-                "Strong -"
-                if corr_slope_lat < -0.5 and p_slope_lat < 0.05
-                else (
-                    "Moderate -"
-                    if corr_slope_lat < -0.3 and p_slope_lat < 0.05
-                    else "Weak/None"
-                )
-            ),
-        ],
-    ]
-
-    table = ax6.table(
-        cellText=table_data, cellLoc="center", loc="center", bbox=[0, 0, 1, 1]
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 2.5)
-
-    # Style header row
-    for j in range(4):
-        table[(0, j)].set_facecolor("#2196F3")
-        table[(0, j)].set_text_props(weight="bold", color="white")
-
-    # Color-code significant correlations
-    for i in range(1, 5):
-        p_val = float(table_data[i][2])
-        if p_val < 0.05:
-            for j in range(4):
-                table[(i, j)].set_facecolor("#C8E6C9")  # Light green for significant
-
-    ax6.set_title("Correlation Summary", fontsize=12, fontweight="bold", pad=20)
-
-    plt.suptitle(
-        "CPP-P300 Relationship Analysis", fontsize=14, fontweight="bold", y=0.995
-    )
-
-    return fig, {
-        "cpp_amplitudes": cpp_amplitudes,
-        "cpp_slopes": cpp_slopes,
-        "p300_amplitudes": p300_amplitudes,
-        "p300_latencies": p300_latencies,
-        "corr_amp_amp": corr_amp_amp,
-        "p_amp_amp": p_amp_amp,
-        "corr_slope_amp": corr_slope_amp,
-        "p_slope_amp": p_slope_amp,
-        "corr_amp_lat": corr_amp_lat,
-        "p_amp_lat": p_amp_lat,
-        "corr_slope_lat": corr_slope_lat,
-        "p_slope_lat": p_slope_lat,
+    return {
+        "df": df,
+        "model_slope_to_amp": result1,
+        "model_amp_to_amp": result2,
+        "model_slope_to_lat": result3,
     }
 
 

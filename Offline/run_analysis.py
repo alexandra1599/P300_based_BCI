@@ -11,6 +11,7 @@ from CPP_Analysis import (
     compare_cpp_slopes,
     comprehensive_cpp_report,
 )
+from connectivity import run_complete_connectivity_analysis_unfiltered
 from sourcelocal import run_source_localization_analysis
 from metrics import (
     p3_metrics,
@@ -28,11 +29,14 @@ from Visualize_ERP import (
     time_frequency_analysis,
     difference_wave_analysis,
     latency_distribution_analysis,
-    n200_p300_temporal_relationship,
+    analyze_n100_p300_relationship,
+    extract_erp_features_multi_subject,
     hemispheric_lateralization_analysis,
-    analyze_n200_p300_correlation,
-    create_n200_p300_comparison_summary,
+    plot_n100_p300_relationship,
     identify_early_components,
+    plot_hemisphere_waveforms_comparison,
+    plot_hemisphere_effects_barplot,
+    plot_subject_hemisphere_comparison,
 )
 
 
@@ -52,6 +56,7 @@ def run_analysis(
     p300_online,
     nop300_online,
     fs=512,
+    all=None,
     comparison=None,
 ):
     import matplotlib.pyplot as plt
@@ -66,9 +71,9 @@ def run_analysis(
     if session == "tACS":
         pz, cz, c1, c2 = 11, 15, 19, 21
     elif session == "Relaxation":
-        nt, fz, pz, cz, cpz, c1, c2 = 9, 6, 26, 15, 20, 20, 23
+        nt, fz, pz, cz, cpz, c1, c2 = 9, 6, 26, 15, 20, 20, 21
 
-    prompt = "CPP[1] or P300[2] or Target[3] or Advanced[4] or Cluster[5/6] or Source[7] analysis: "
+    prompt = "CPP[1] or P300[2] or Target[3] or Advanced[4] or Cluster[5/6] or Source[7] or Connectivity[8] analysis: "
     c = int(input(prompt))
 
     time_ms = np.arange(p300_pre.shape[0]) * 1000 / fs
@@ -136,261 +141,60 @@ def run_analysis(
 
             # === 2. CPP Latency Distribution (PRE) ===
             print("\n=== CPP Latency Distribution (Pre) ===")
-            try:
-                lat_fig, lat_stats = cpp_latency_distribution_analysis(
-                    nop300_pre, time_ms, cpp_channels, window=(200, 500)
-                )
-                save_path = os.path.join(output_dir, "cpp_latency_pre.png")
-                lat_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                print(f"✅ Saved: cpp_latency_pre.png")
-                print(
-                    f"   Mean latency: {lat_stats['mean_lat']:.1f} ± {lat_stats['std_lat']:.1f} ms"
-                )
-                plt.close(lat_fig)
-            except Exception as e:
-                print(f"❌ Error in CPP latency analysis: {e}")
+            # Run all CPP analyses with MEM
 
-            # === 3. CPP Latency Distribution (POST) ===
-            print("\n=== CPP Latency Distribution (Post) ===")
-            try:
-                lat_fig, lat_stats = cpp_latency_distribution_analysis(
-                    nop300_post, time_ms, cpp_channels, window=(200, 500)
-                )
-                save_path = os.path.join(output_dir, "cpp_latency_post.png")
-                lat_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                print(f"✅ Saved: cpp_latency_post.png")
-                print(
-                    f"   Mean latency: {lat_stats['mean_lat']:.1f} ± {lat_stats['std_lat']:.1f} ms"
-                )
-                plt.close(lat_fig)
-            except Exception as e:
-                print(f"❌ Error in CPP latency analysis: {e}")
+            # 1. Compare CPP slopes across conditions
+            cpp_slope_results = compare_cpp_slopes(
+                all,
+                times=time_ms,
+                channel_indices=[c1, c2],  # CP1, CP2 indices
+                buildup_window=(0, 500),
+            )
 
-            # === 4. CPP Buildup Rate (PRE) ===
-            print("\n=== CPP Buildup Rate Analysis (Pre) ===")
-            try:
-                buildup_fig, buildup_stats = cpp_buildup_rate_analysis(
-                    nop300_pre,
-                    time_ms,
-                    cpp_channels,
-                    baseline_window=(-200, 0),
-                    buildup_window=(0, 500),
+            # 2. CPP-P300 relationship for each condition
+            for cond in ["pre", "post"]:
+                print(f"\n{'='*70}")
+                print(f"CPP-P300 RELATIONSHIP: {cond.upper()}")
+                print(f"{'='*70}")
+
+                results = cpp_p300_relationship(
+                    all,
+                    condition_key_cpp=f"nback_{cond}_nontarget_all",
+                    condition_key_p300=f"nback_{cond}_target_all",
+                    times=time_ms,
+                    cpp_channels=[c1, c2],
+                    p300_channel=26,  # Pz
                 )
-                save_path = os.path.join(output_dir, "cpp_buildup_pre.png")
-                buildup_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                print(f"✅ Saved: cpp_buildup_pre.png")
-                print(
-                    f"   Mean buildup rate: {buildup_stats['mean_slope']:.2f} ± {buildup_stats['std_slope']:.2f} µV/s"
-                )
-                plt.close(buildup_fig)
-            except Exception as e:
-                print(f"❌ Error in CPP buildup analysis: {e}")
-
-                # === CPP ONSET ANALYSIS ===
-            print("\n=== CPP Onset Detection ===")
-            for name, data in [("Pre", nop300_pre), ("Post", nop300_post)]:
-                try:
-                    onset_fig, onset_stats = cpp_onset_analysis(
-                        data,
-                        time_ms,
-                        cpp_channels,
-                        baseline_window=(-200, 0),
-                        search_window=(0, 400),
-                    )
-                    save_path = os.path.join(
-                        output_dir, f"cpp_onset_{name.lower()}.png"
-                    )
-                    onset_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                    print(f"✅ Saved: cpp_onset_{name.lower()}.png")
-                    print(
-                        f"   {name} CPP onset: {onset_stats['mean_onset']:.1f} ± {onset_stats['std_onset']:.1f} ms"
-                    )
-                    plt.close(onset_fig)
-                except Exception as e:
-                    print(f"❌ Error in {name} onset analysis: {e}")
-
-            # === CPP BUILDUP RATE ===
-            print("\n=== CPP Buildup Rate Analysis ===")
-            for name, data in [("Pre", nop300_pre), ("Post", nop300_post)]:
-                try:
-                    buildup_fig, buildup_stats = cpp_buildup_rate_analysis(
-                        data,
-                        time_ms,
-                        cpp_channels,
-                        baseline_window=(-200, 0),
-                        buildup_window=(0, 500),
-                    )
-                    save_path = os.path.join(
-                        output_dir, f"cpp_buildup_{name.lower()}.png"
-                    )
-                    buildup_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                    print(f"✅ Saved: cpp_buildup_{name.lower()}.png")
-                    print(
-                        f"   {name} buildup rate: {buildup_stats['mean_slope']:.2f} ± {buildup_stats['std_slope']:.2f} µV/s"
-                    )
-                    plt.close(buildup_fig)
-                except Exception as e:
-                    print(f"❌ Error in {name} buildup analysis: {e}")
-
-            # === CPP-P300 RELATIONSHIP ===
-            print("\n=== CPP-P300 Relationship Analysis ===")
-            for name, cpp_data, p300_data in [
-                ("Pre", nop300_pre, p300_pre),
-                ("Post", nop300_post, p300_post),
-            ]:
-                try:
-                    rel_fig, rel_stats = cpp_p300_relationship(
-                        cpp_data,
-                        p300_data,
-                        time_ms,
-                        cpp_channels,
-                        pz,
-                        cpp_window=(200, 500),
-                        p300_window=(300, 600),
-                    )
-                    save_path = os.path.join(
-                        output_dir, f"cpp_p300_relationship_{name.lower()}.png"
-                    )
-                    rel_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                    print(f"✅ Saved: cpp_p300_relationship_{name.lower()}.png")
-                    print(
-                        f"   {name} CPP Amp → P300 Amp: r = {rel_stats['corr_amp_amp']:.3f}, p = {rel_stats['p_amp_amp']:.4f}"
-                    )
-                    plt.close(rel_fig)
-                except Exception as e:
-                    print(f"❌ Error in {name} CPP-P300 analysis: {e}")
 
         elif comparison == 1:
             # === WITH ONLINE DATA ===
             print("\n=== CPP Comparison: Pre vs Post vs Online ===")
-            try:
-                comp_fig = compare_cpp_conditions(
-                    nop300_pre, nop300_post, nop300_online, time_ms, cpp_channels
+            # Run all CPP analyses with MEM
+
+            # 1. Compare CPP slopes across conditions
+            cpp_slope_results = compare_cpp_slopes(
+                all,
+                times=time_ms,
+                channel_indices=[c1, c2],  # CP1, CP2 indices
+                buildup_window=(0, 500),
+            )
+
+            # 2. CPP-P300 relationship for each condition
+            for cond in ["pre", "post", "online"]:
+                print(f"\n{'='*70}")
+                print(f"CPP-P300 RELATIONSHIP: {cond.upper()}")
+                print(f"{'='*70}")
+
+                results = cpp_p300_relationship(
+                    all,
+                    condition_key_cpp=f"nback_{cond}_nontarget_all",
+                    condition_key_p300=f"nback_{cond}_target_all",
+                    times=time_ms,
+                    cpp_channels=[c1, c2],
+                    p300_channel=26,  # Pz
                 )
-                save_path = os.path.join(output_dir, "cpp_three_way_comparison.png")
-                comp_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                print(f"✅ Saved: cpp_three_way_comparison.png")
-                plt.close(comp_fig)
-            except Exception as e:
-                print(f"❌ Error in CPP comparison: {e}")
-
-            # Latency analysis for all three
-            for name, data in [
-                ("Pre", nop300_pre),
-                ("Post", nop300_post),
-                ("Online", nop300_online),
-            ]:
-                print(f"\n=== CPP Latency Distribution ({name}) ===")
-                try:
-                    lat_fig, lat_stats = cpp_latency_distribution_analysis(
-                        data, time_ms, cpp_channels, window=(200, 500)
-                    )
-                    save_path = os.path.join(
-                        output_dir, f"cpp_latency_{name.lower()}.png"
-                    )
-                    lat_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                    print(f"✅ Saved: cpp_latency_{name.lower()}.png")
-                    print(
-                        f"   Mean latency: {lat_stats['mean_lat']:.1f} ± {lat_stats['std_lat']:.1f} ms"
-                    )
-                    plt.close(lat_fig)
-                except Exception as e:
-                    print(f"❌ Error: {e}")
-
-                    # 1. Slope comparison
-            print("\n--- CPP Slope Comparison ---")
-            try:
-                slope_fig, slope_stats = compare_cpp_slopes(
-                    nop300_pre,
-                    nop300_post,
-                    nop300_online,
-                    time_ms,
-                    cpp_channels,
-                    buildup_window=(0, 500),
-                )
-                save_path = os.path.join(output_dir, "cpp_slope_comparison.png")
-                slope_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                print(f"✅ Saved: cpp_slope_comparison.png")
-                plt.close(slope_fig)
-            except Exception as e:
-                print(f"❌ Error in slope comparison: {e}")
-
-            # 2. Onset analysis for all three
-            print("\n--- CPP Onset Analysis (All Conditions) ---")
-            for name, data in [
-                ("Pre", nop300_pre),
-                ("Post", nop300_post),
-                ("Online", nop300_online),
-            ]:
-                try:
-                    onset_fig, onset_stats = cpp_onset_analysis(
-                        data, time_ms, cpp_channels
-                    )
-                    save_path = os.path.join(
-                        output_dir, f"cpp_onset_{name.lower()}.png"
-                    )
-                    onset_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                    print(
-                        f"✅ {name}: onset = {onset_stats['mean_onset']:.1f} ± {onset_stats['std_onset']:.1f} ms"
-                    )
-                    plt.close(onset_fig)
-                except Exception as e:
-                    print(f"❌ {name}: {e}")
-
-            # 3. CPP-P300 relationships
-            print("\n--- CPP-P300 Relationships (All Conditions) ---")
-            for name, cpp_data, p300_data in [
-                ("Pre", nop300_pre, p300_pre),
-                ("Post", nop300_post, p300_post),
-                ("Online", nop300_online, p300_online),
-            ]:
-                try:
-                    rel_fig, rel_stats = cpp_p300_relationship(
-                        cpp_data, p300_data, time_ms, cpp_channels, pz
-                    )
-                    save_path = os.path.join(
-                        output_dir, f"cpp_p300_relationship_{name.lower()}.png"
-                    )
-                    rel_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                    print(
-                        f"✅ {name}: CPP Slope → P300 Amp: r = {rel_stats['corr_slope_amp']:.3f}"
-                    )
-                    plt.close(rel_fig)
-                except Exception as e:
-                    print(f"❌ {name}: {e}")
-
-            # 4. Comprehensive report
-            print("\n--- Generating Comprehensive Report ---")
-            try:
-                report = comprehensive_cpp_report(
-                    nop300_pre,
-                    nop300_post,
-                    nop300_online,
-                    p300_pre,
-                    p300_post,
-                    p300_online,
-                    time_ms,
-                    cpp_channels,
-                    pz,
-                    labels,
-                )
-                # Save report to text file
-                report_path = os.path.join(output_dir, "cpp_comprehensive_report.txt")
-                with open(report_path, "w") as f:
-                    f.write("=" * 70 + "\n")
-                    f.write("COMPREHENSIVE CPP ANALYSIS REPORT\n")
-                    f.write("=" * 70 + "\n")
-                    f.write(f"\nSubject ID: {ID}\n")
-                    f.write(f"Session: {session}\n")
-                    f.write(f"CPP Channels: {cpp_channel_names}\n")
-                    f.write(f"\n" + str(report))
-                print(f"✅ Saved comprehensive report: cpp_comprehensive_report.txt")
-            except Exception as e:
-                print(f"❌ Error generating report: {e}")
-
         print("\n" + "=" * 70)
         print("✅ ENHANCED CPP ANALYSIS COMPLETE!")
-        print(f"📁 All figures saved to: {output_dir}")
         print("=" * 70)
 
     elif c == 2:  # === P300 Target Analysis ===
@@ -447,18 +251,27 @@ def run_analysis(
             tf_fig, _, _ = time_frequency_analysis(p300_pre, fs=512, channel_idx=pz)
             plt.show()
 
-            # Difference waves
-            print("\n=== Difference Wave Analysis ===")
-            diff_fig = difference_wave_analysis(
-                p300_pre,
-                p300_post,
-                time_ms,
-                channels_to_plot=[25, 6, cz],
+            # Time-frequency
+            print("\n=== Time-Frequency Analysis ===")
+            tf_fig, _, _ = time_frequency_analysis(p300_post, fs=512, channel_idx=pz)
+            plt.show()
+
+            # Difference wave
+            print("\n=== Difference Wave Analysis POST ===")
+            fig3 = difference_wave_analysis(
+                target_epochs=None,  # Not used for pre_vs_post
+                nontarget_epochs=None,
+                times=time_ms,
+                channels_to_plot=[6, 17, 26],
                 labels=labels,
+                all=all,
+                comparison_type="pre_vs_post",
+                condition_prefix="nback_target",  # Will compare nback_pre_target vs nback_post_target
             )
+
             plt.show()  # <-- Change this
             plt.pause(0.1)
-
+            """
             # Latency distribution
             print("\n=== Latency Distribution Analysis Pre ===")
             lat_fig, lat_stats = latency_distribution_analysis(
@@ -475,12 +288,6 @@ def run_analysis(
             plt.show()
             plt.pause(0.1)
             """
-            print("\n=== Statistical Comparison (Pre vs Post) ===")
-            stat_fig, clusters = cluster_based_comparison(
-                p300_pre, p300_post, time_ms, 25, n_permutations=1000
-            )
-            plt.show()  # <-- Change this
-            plt.pause(0.1)"""
 
         elif comparison == 1:
             pz_pre_target = np.mean(p300_pre[:, pz, :], axis=1)
@@ -729,205 +536,6 @@ def run_analysis(
             rho, p = spearmanr(trial_idx, per_trial_lat_on)
             print(f"Latency drift ON: Spearman r={rho:.2f}, p={p:.3g}")
 
-            """
-
-            from sklearn.cluster import KMeans
-
-            lat = per_trial_lat_on.reshape(-1, 1)
-            km = KMeans(n_clusters=2, n_init=20, random_state=0).fit(lat)
-            labels = km.labels_
-            print("Cluster means (ms):", sorted(km.cluster_centers_.ravel()))
-
-            # Compare ERPs of the two latency clusters
-            erp_fast = X[labels == 0].mean(axis=0)
-            erp_slow = X[labels == 1].mean(axis=0)
-
-            print("Fast cluster:", p3_metrics(t_ms, erp_fast))
-            print("Slow cluster:", p3_metrics(t_ms, erp_slow))
-
-            sign_ref = np.sign(np.max(p300_post) - abs(np.min(p300_post))) or 1.0
-            erp_online_pz_fixed = sign_ref * X.mean(axis=0)  # X.mean: online ERP at Pz
-            print(p3_metrics(t_ms, erp_online_pz_fixed, snr_method="mad"))
-
-            erp_online_pz = X.mean(axis=0)  # grand-average (online) at Pz
-
-            def sem(a, axis=0):
-                a = np.asarray(a)
-                return np.std(a, axis=axis, ddof=1) / np.sqrt(a.shape[axis])
-
-            # ====== Figure 1: Pre vs Post vs Online ======
-            fig1, ax1 = plt.subplots(figsize=(8, 4))
-
-            # Online SEM from trials
-            online_sem = sem(X, axis=0)
-
-            ax1.plot(t_ms, pz_pre_target, label="Pre (offline)")
-            ax1.plot(t_ms, pz_post_target, label="Post (offline)")
-            ax1.plot(t_ms, erp_online_pz, label="Online day1 (BCI)")
-
-            ax1.fill_between(
-                t_ms,
-                pz_pre_target - stdpre,
-                pz_pre_target + stdpre,
-                alpha=0.2,
-                color="blue",
-            )
-
-            ax1.fill_between(
-                t_ms,
-                pz_post_target - stdpost,
-                pz_post_target + stdpost,
-                alpha=0.2,
-                color="red",
-            )
-
-            ax1.fill_between(
-                t_ms,
-                erp_online_pz - online_sem,
-                erp_online_pz + online_sem,
-                alpha=0.2,
-                color="green",
-            )
-
-            ax1.set_title("ERP at Fz: Pre vs Post vs Online day 1")
-            ax1.set_xlabel("Time (ms)")
-            ax1.set_ylabel("Amplitude (µV)")
-            ax1.axvline(0, linestyle="--", linewidth=1)
-            ax1.legend(loc="best")
-            ax1.grid(True, alpha=0.3)
-            plt.tight_layout()
-            plt.show()
-
-            # ====== Figure 2: Online FAST vs SLOW clusters at Pz ======
-            # Determine which label is earlier (FAST) based on cluster mean latencies you computed
-            # If you don’t have per_trial_lat here, infer FAST/SLOW by ERP center-of-mass or keep 0/1 as-is.
-            # For simplicity, we’ll compute means by label 0 and 1 and you can swap if needed.
-
-            X0 = X[labels == 0]  # cluster 0 trials
-            X1 = X[labels == 1]  # cluster 1 trials
-
-            erp0 = X0.mean(axis=0)
-            erp1 = X1.mean(axis=0)
-            sem0 = sem(X0, axis=0) if len(X0) > 1 else np.zeros_like(erp0)
-            sem1 = sem(X1, axis=0) if len(X1) > 1 else np.zeros_like(erp1)
-
-            fig2, ax2 = plt.subplots(figsize=(8, 4))
-            ax2.plot(t_ms, erp0, label=f"Cluster 0 (n={len(X0)})")
-            ax2.fill_between(t_ms, erp0 - sem0, erp0 + sem0, alpha=0.2)
-
-            ax2.plot(t_ms, erp1, label=f"Cluster 1 (n={len(X1)})")
-            ax2.fill_between(t_ms, erp1 - sem1, erp1 + sem1, alpha=0.2)
-
-            # Highlight canonical P3 windows you used
-            ax2.axvspan(250, 400, alpha=0.1, label="FAST window (250–400 ms)")
-            ax2.axvspan(420, 620, alpha=0.1, label="SLOW window (420–620 ms)")
-
-            ax2.set_title("Online day 1 ERP at Fz: FAST vs SLOW clusters")
-            ax2.set_xlabel("Time (ms)")
-            ax2.set_ylabel("Amplitude (µV)")
-            ax2.axvline(0, linestyle="--", linewidth=1)
-            ax2.legend(loc="best")
-            ax2.grid(True, alpha=0.3)
-            plt.tight_layout()
-            plt.show()
-
-            # ===== Clustered ERPs by condition (PRE, POST, ONLINE) =====
-            # Build trials×time matrices at Pz
-            X_pre = trials_time_from_tc_tr(p300_pre, pz)
-            X_post = trials_time_from_tc_tr(p300_post, pz)
-            X_on = trials_time_from_tc_tr(p300_online, pz)
-
-            print("\n--- OFFLINE PRE: latency clustering at Pz ---")
-            res_pre = cluster_latency_and_plot(
-                time_ms, X_pre, title="Offline PRE ERP at Pz: FAST vs SLOW clusters"
-            )
-            print(
-                f"PRE jitter SD: {res_pre['jitter_sd']:.2f} ms | centers: {np.array(res_pre['centers_ms'])}"
-            )
-            print("  Cluster 0 metrics:", p3_metrics(time_ms, res_pre["erp0"]))
-            print("  Cluster 1 metrics:", p3_metrics(time_ms, res_pre["erp1"]))
-
-            print("\n--- OFFLINE POST: latency clustering at Pz ---")
-            res_post = cluster_latency_and_plot(
-                time_ms, X_post, title="Offline POST ERP at Pz: FAST vs SLOW clusters"
-            )
-            print(
-                f"POST jitter SD: {res_post['jitter_sd']:.2f} ms | centers: {np.array(res_post['centers_ms'])}"
-            )
-            print("  Cluster 0 metrics:", p3_metrics(time_ms, res_post["erp0"]))
-            print("  Cluster 1 metrics:", p3_metrics(time_ms, res_post["erp1"]))
-
-            print("\n--- ONLINE: latency clustering at Pz ---")
-            res_on = cluster_latency_and_plot(
-                time_ms, X_on, title="Online ERP at Fz: FAST vs SLOW clusters"
-            )
-            print(
-                f"ONLINE jitter SD: {res_on['jitter_sd']:.2f} ms | centers: {np.array(res_on['centers_ms'])}"
-            )
-            print("  Cluster 0 metrics:", p3_metrics(time_ms, res_on["erp0"]))
-            print("  Cluster 1 metrics:", p3_metrics(time_ms, res_on["erp1"]))
-
-            # Time-frequency
-            print("\n=== Time-Frequency Analysis PRE===")
-            tf_fig, _, _ = time_frequency_analysis(p300_pre, fs=512, channel_idx=pz)
-            plt.show()
-
-            print("\n=== Time-Frequency Analysis POST===")
-            tf_fig, _, _ = time_frequency_analysis(p300_post, fs=512, channel_idx=pz)
-            plt.show()
-
-            print("\n=== Time-Frequency Analysis ONLINE===")
-            tf_fig, _, _ = time_frequency_analysis(p300_online, fs=512, channel_idx=pz)
-            plt.show()
-
-            # Difference waves
-            print("\n=== Difference Wave Analysis  -- Pre vs Post ===")
-            diff_fig = difference_wave_analysis(
-                p300_pre,
-                p300_post,
-                time_ms,
-                channels_to_plot=[25, 6, cz],
-                labels=labels,
-            )
-            plt.show()  # <-- Change this
-            plt.pause(0.1)
-
-            print("\n=== Difference Wave Analysis -- Pre vs Online ===")
-            diff_fig = difference_wave_analysis(
-                p300_pre,
-                p300_online,
-                time_ms,
-                channels_to_plot=[25, 6, cz],
-                labels=labels,
-            )
-            plt.show()  # <-- Change this
-            plt.pause(0.1)
-
-            # Latency distribution
-            print("\n=== Latency Distribution Analysis Pre ===")
-            lat_fig, lat_stats = latency_distribution_analysis(
-                p300_pre, time_ms, 25, window=(250, 600)
-            )
-            plt.show()
-            plt.pause(0.1)
-
-            # Latency distribution
-            print("\n=== Latency Distribution Analysis Post ===")
-            lat_fig, lat_stats = latency_distribution_analysis(
-                p300_post, time_ms, 25, window=(250, 600)
-            )
-            plt.show()
-            plt.pause(0.1)
-
-            # Latency distribution
-            print("\n=== Latency Distribution Analysis Online ===")
-            lat_fig, lat_stats = latency_distribution_analysis(
-                p300_online, time_ms, 25, window=(250, 600)
-            )
-            plt.show()
-            plt.pause(0.1)
-            """
-
     elif c == 3:  # === Target vs Non-Target (Pre and Post) ===
         if comparison == None:
             for label, targ, nontarg in zip(
@@ -1042,75 +650,109 @@ def run_analysis(
 
         time_ms = np.arange(p300_pre.shape[0]) * 1000 / fs
 
-        # ===== 1. N200-P300 RELATIONSHIP =====
-        print("\n=== 1. N200-P300 Temporal Relationship ===")
+        # ===== 1. N100-P300 RELATIONSHIP =====
+        print("\n=== 1. N100-P300 Temporal Relationship ===")
         try:
             # Analyze for Pre condition
-            n2p3_pre_fig, n2p3_pre_stats = n200_p300_temporal_relationship(
-                p300_pre, time_ms, pz, n200_window=(150, 250), p300_window=(300, 600)
+            print("\n=== PRE ===")
+            df_target = extract_erp_features_multi_subject(
+                all,
+                "nback_pre_target_all",
+                channel_idx=26,  # Pz
+                n100_window=(100, 250),
+                p300_window=(300, 600),
+                times=time_ms,
+            )
+            print(f"Total trials: {len(df_target)}")
+            print(f"Subjects: {df_target['subject'].nunique()}")
+            print(f"Trials per subject: {df_target.groupby('subject').size()}")
+
+            save_path = os.path.join(targeted_dir, "n100_p300_relationship_pre.png")
+            # Run mixed effects models
+            results = analyze_n100_p300_relationship(df_target)
+
+            # Access specific results
+            print("\n=== N100 → P300 Amplitude Effect ===")
+            print(f"Coefficient: {results['n100_to_p300_amp'].params['n100_amp']:.4f}")
+            print(f"P-value: {results['n100_to_p300_amp'].pvalues['n100_amp']:.4f}")
+            print(
+                f"95% CI: {results['n100_to_p300_amp'].conf_int().loc['n100_amp'].values}"
             )
 
-            save_path = os.path.join(targeted_dir, "n200_p300_relationship_pre.png")
-            n2p3_pre_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-
-            print(f"✅ Pre N200-P300 analysis:")
-            print(
-                f"   N200 amp → P300 amp: r={n2p3_pre_stats['corr_amp']:.3f}, p={n2p3_pre_stats['p_amp']:.4f}"
-            )
-            print(
-                f"   N200 lat → P300 lat: r={n2p3_pre_stats['corr_lat']:.3f}, p={n2p3_pre_stats['p_lat']:.4f}"
-            )
-            print(
-                f"   Mean N200-P300 interval: {np.mean(n2p3_pre_stats['interval']):.1f} ms"
-            )
-
-            plt.close(n2p3_pre_fig)
+            # Create plot
+            fig = plot_n100_p300_relationship(df_target, results)
+            plt.show()
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
             # Analyze for Post condition
-            n2p3_post_fig, n2p3_post_stats = n200_p300_temporal_relationship(
-                p300_post, time_ms, pz, n200_window=(150, 250), p300_window=(300, 600)
+            print("\n=== POST ===")
+            df_target = extract_erp_features_multi_subject(
+                all,
+                "nback_post_target_all",
+                channel_idx=26,  # Pz
+                n100_window=(100, 250),
+                p300_window=(300, 600),
+                times=time_ms,
+            )
+            print(f"Total trials: {len(df_target)}")
+            print(f"Subjects: {df_target['subject'].nunique()}")
+            print(f"Trials per subject: {df_target.groupby('subject').size()}")
+
+            save_path = os.path.join(targeted_dir, "n100_p300_relationship_post.png")
+            # Run mixed effects models
+            results = analyze_n100_p300_relationship(df_target)
+
+            # Access specific results
+            print("\n=== N100 → P300 Amplitude Effect ===")
+            print(f"Coefficient: {results['n100_to_p300_amp'].params['n100_amp']:.4f}")
+            print(f"P-value: {results['n100_to_p300_amp'].pvalues['n100_amp']:.4f}")
+            print(
+                f"95% CI: {results['n100_to_p300_amp'].conf_int().loc['n100_amp'].values}"
             )
 
-            save_path = os.path.join(targeted_dir, "n200_p300_relationship_post.png")
-            n2p3_post_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-
-            print(f"✅ Post N200-P300 analysis:")
-            print(
-                f"   N200 amp → P300 amp: r={n2p3_post_stats['corr_amp']:.3f}, p={n2p3_post_stats['p_amp']:.4f}"
-            )
-            print(
-                f"   N200 lat → P300 lat: r={n2p3_post_stats['corr_lat']:.3f}, p={n2p3_post_stats['p_lat']:.4f}"
-            )
-            print(
-                f"   Mean N200-P300 interval: {np.mean(n2p3_post_stats['interval']):.1f} ms"
-            )
-
-            plt.close(n2p3_post_fig)
+            # Create plot
+            fig = plot_n100_p300_relationship(df_target, results)
+            plt.show()
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
             # If online data available
             if comparison == 1:
-                n2p3_online_fig, n2p3_online_stats = n200_p300_temporal_relationship(
-                    p300_online,
-                    time_ms,
-                    pz,
-                    n200_window=(150, 250),
+                print("\n=== ONLINE ===")
+                df_target = extract_erp_features_multi_subject(
+                    all,
+                    "nback_online_target_all",
+                    channel_idx=26,  # Pz
+                    n100_window=(100, 250),
                     p300_window=(300, 600),
+                    times=time_ms,
                 )
+                print(f"Total trials: {len(df_target)}")
+                print(f"Subjects: {df_target['subject'].nunique()}")
+                print(f"Trials per subject: {df_target.groupby('subject').size()}")
 
                 save_path = os.path.join(
-                    targeted_dir, "n200_p300_relationship_online.png"
+                    targeted_dir, "n100_p300_relationship_online.png"
                 )
-                n2p3_online_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                # Run mixed effects models
+                results = analyze_n100_p300_relationship(df_target)
 
-                print(f"✅ Online N200-P300 analysis:")
+                # Access specific results
+                print("\n=== N100 → P300 Amplitude Effect ===")
                 print(
-                    f"   N200 amp → P300 amp: r={n2p3_online_stats['corr_amp']:.3f}, p={n2p3_online_stats['p_amp']:.4f}"
+                    f"Coefficient: {results['n100_to_p300_amp'].params['n100_amp']:.4f}"
+                )
+                print(f"P-value: {results['n100_to_p300_amp'].pvalues['n100_amp']:.4f}")
+                print(
+                    f"95% CI: {results['n100_to_p300_amp'].conf_int().loc['n100_amp'].values}"
                 )
 
-                plt.close(n2p3_online_fig)
+                # Create plot
+                fig = plot_n100_p300_relationship(df_target, results)
+                plt.show()
+                fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
         except Exception as e:
-            print(f"❌ Error in N200-P300 analysis: {e}")
+            print(f"❌ Error in N100-P300 analysis: {e}")
             import traceback
 
             traceback.print_exc()
@@ -1124,124 +766,57 @@ def run_analysis(
                 left_channels = ["P3", "CP1", "C3"]
                 right_channels = ["P4", "CP2", "C4"]
             elif session == "Relaxation":
-                left_channels = ["P3", "CP1", "C3"]
-                right_channels = ["P4", "CP2", "C4"]
+                left_channels = ["P3"]  # , "CP1", "P7"]
+                right_channels = ["P4"]  # , "CP2", "P8"]
 
             # Pre condition
-            try:
-                lat_pre_fig, lat_pre_stats = hemispheric_lateralization_analysis(
-                    p300_pre,
-                    time_ms,
-                    labels,
-                    left_channels=left_channels,
-                    right_channels=right_channels,
-                )
+            # Run analyses for all conditions
+            results_pre = hemispheric_lateralization_analysis(
+                all,
+                "nback_pre_target_all",
+                left_channels,
+                right_channels,
+                labels,
+                time_ms,
+            )
 
-                save_path = os.path.join(targeted_dir, "lateralization_pre.png")
-                lat_pre_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-
-                print(f"✅ Pre lateralization:")
-                print(f"   Interpretation: {lat_pre_stats['interpretation']}")
-                print(f"   Mean LI: {lat_pre_stats['mean_li']:.3f}")
-                print(
-                    f"   Left vs Right: t={lat_pre_stats['t_stat']:.2f}, p={lat_pre_stats['p_value']:.4f}"
-                )
-
-                plt.close(lat_pre_fig)
-            except Exception as e:
-                print(f"⚠️ Pre lateralization failed: {e}")
-
-            # Post condition
-            try:
-                lat_post_fig, lat_post_stats = hemispheric_lateralization_analysis(
-                    p300_post,
-                    time_ms,
-                    labels,
-                    left_channels=left_channels,
-                    right_channels=right_channels,
-                )
-
-                save_path = os.path.join(targeted_dir, "lateralization_post.png")
-                lat_post_fig.savefig(save_path, dpi=150, bbox_inches="tight")
-
-                print(f"✅ Post lateralization:")
-                print(f"   Interpretation: {lat_post_stats['interpretation']}")
-                print(f"   Mean LI: {lat_post_stats['mean_li']:.3f}")
-                print(
-                    f"   Left vs Right: t={lat_post_stats['t_stat']:.2f}, p={lat_post_stats['p_value']:.4f}"
-                )
-
-                plt.close(lat_post_fig)
-            except Exception as e:
-                print(f"⚠️ Post lateralization failed: {e}")
+            results_post = hemispheric_lateralization_analysis(
+                all,
+                "nback_post_target_all",
+                left_channels,
+                right_channels,
+                labels,
+                time_ms,
+            )
 
             # Online condition (if available)
             if comparison == 1:
-                try:
-                    lat_online_fig, lat_online_stats = (
-                        hemispheric_lateralization_analysis(
-                            p300_online,
-                            time_ms,
-                            labels,
-                            left_channels=left_channels,
-                            right_channels=right_channels,
-                        )
-                    )
+                results_online = hemispheric_lateralization_analysis(
+                    all,
+                    "nback_online_target_all",
+                    left_channels,
+                    right_channels,
+                    labels,
+                    time_ms,
+                )
 
-                    save_path = os.path.join(targeted_dir, "lateralization_online.png")
-                    lat_online_fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                results_dict = {
+                    "pre": results_pre,
+                    "post": results_post,
+                    "online": results_online,
+                }
 
-                    print(f"✅ Online lateralization:")
-                    print(f"   Interpretation: {lat_online_stats['interpretation']}")
-                    print(f"   Mean LI: {lat_online_stats['mean_li']:.3f}")
-
-                    plt.close(lat_online_fig)
-                except Exception as e:
-                    print(f"⚠️ Online lateralization failed: {e}")
+                # Create figures
+                fig1 = plot_hemisphere_waveforms_comparison(results_dict, time_ms)
+                fig2 = plot_hemisphere_effects_barplot(results_dict)
+                fig3 = plot_subject_hemisphere_comparison(results_dict)
+                plt.show()
 
         except Exception as e:
             print(f"❌ Error in lateralization analysis: {e}")
             import traceback
 
             traceback.print_exc()
-
-        # ===== SUMMARY =====
-        print("\n" + "=" * 70)
-        print("TARGETED ANALYSIS SUMMARY")
-        print("=" * 70)
-
-        print("\n1. N200-P300 Relationship:")
-        if "n2p3_pre_stats" in locals() and "n2p3_post_stats" in locals():
-            pre_coupled = n2p3_pre_stats["p_amp"] < 0.05
-            post_coupled = n2p3_post_stats["p_amp"] < 0.05
-
-            print(
-                f"   Pre:  {'✓ Coupled' if pre_coupled else '✗ Not coupled'} (p={n2p3_pre_stats['p_amp']:.4f})"
-            )
-            print(
-                f"   Post: {'✓ Coupled' if post_coupled else '✗ Not coupled'} (p={n2p3_post_stats['p_amp']:.4f})"
-            )
-
-            if pre_coupled or post_coupled:
-                print(f"   → N200 amplitude predicts P300 amplitude")
-
-        print("\n2. Hemispheric Lateralization:")
-        if "lat_pre_stats" in locals():
-            print(f"   Pre:  {lat_pre_stats['interpretation']}")
-        if "lat_post_stats" in locals():
-            print(f"   Post: {lat_post_stats['interpretation']}")
-
-            if "lat_pre_stats" in locals() and "lat_post_stats" in locals():
-                # Check if lateralization changed
-                pre_left = lat_pre_stats["mean_li"] > 0.1
-                post_left = lat_post_stats["mean_li"] > 0.1
-                pre_right = lat_pre_stats["mean_li"] < -0.1
-                post_right = lat_post_stats["mean_li"] < -0.1
-
-                if pre_left != post_left or pre_right != post_right:
-                    print(f"   → Lateralization pattern CHANGED from Pre to Post")
-                else:
-                    print(f"   → Lateralization pattern STABLE from Pre to Post")
 
         print(f"\n📁 All targeted analyses saved to: {targeted_dir}")
         print("=" * 70)
@@ -2248,96 +1823,12 @@ def run_analysis(
         )
 
     elif c == 8:
-        # ===== NEW: N200-P300 CORRELATION ANALYSIS =====
-        print("\n" + "=" * 70)
-        print("RUNNING N200-P300 CORRELATION ANALYSIS")
-        print("=" * 70)
-
-        # Analyze each condition
-        results = {}
-
-        # Pre condition
-        if p300_pre is not None:
-            time_ms = np.arange(p300_pre.shape[0]) * 1000 / fs
-
-            results["Pre"] = analyze_n200_p300_correlation(
-                erp_data=p300_pre,  # Shape: (trials, channels, timepoints)
-                channel_labels=labels,  # List of channel names
-                time_ms=time_ms,  # Time vector
-                condition_name="Pre",
-            )
-
-            components = identify_early_components(
-                erp_data=p300_pre,  # Shape: (512, 32, 54) = (time, ch, trials)
-                channel_labels=labels,
-                time_ms=time_ms,
-                condition_name="Online",
-                data_format="time_ch_trials",  # ← IMPORTANT: Specify this!
-            )
-
-            if results["Pre"] is not None:
-                plt.savefig(
-                    f"{output_dir}/n200_p300_correlation_pre.png",
-                    dpi=300,
-                    bbox_inches="tight",
-                )
-                plt.show()
-                plt.close()
-
-        # Post condition
-        if p300_post is not None:
-            time_ms = np.arange(p300_post.shape[0]) * 1000 / fs
-
-            results["Post"] = analyze_n200_p300_correlation(
-                erp_data=p300_post,
-                channel_labels=labels,
-                time_ms=time_ms,
-                condition_name="Post",
-            )
-
-            components = identify_early_components(
-                erp_data=p300_post,  # Shape: (512, 32, 54) = (time, ch, trials)
-                channel_labels=labels,
-                time_ms=time_ms,
-                condition_name="Online",
-                data_format="time_ch_trials",  # ← IMPORTANT: Specify this!
-            )
-            if results["Post"] is not None:
-                plt.savefig(
-                    f"{output_dir}/n200_p300_correlation_post.png",
-                    dpi=300,
-                    bbox_inches="tight",
-                )
-                plt.show()
-                plt.close()
-
-        # Online condition
-        if p300_online is not None:
-            time_ms = np.arange(p300_online.shape[0]) * 1000 / fs
-
-            results["Online"] = analyze_n200_p300_correlation(
-                erp_data=p300_online,
-                channel_labels=labels,
-                time_ms=time_ms,
-                condition_name="Online",
-            )
-
-            components = identify_early_components(
-                erp_data=p300_online,  # Shape: (512, 32, 54) = (time, ch, trials)
-                channel_labels=labels,
-                time_ms=time_ms,
-                condition_name="Online",
-                data_format="time_ch_trials",  # ← IMPORTANT: Specify this!
-            )
-
-            if results["Online"] is not None:
-                plt.savefig(
-                    f"{output_dir}/n200_p300_correlation_online.png",
-                    dpi=300,
-                    bbox_inches="tight",
-                )
-                plt.show()
-                plt.close()
-
-        # ===== CREATE COMPARISON SUMMARY =====
-        create_n200_p300_comparison_summary(results, output_dir)
+        # Create output directory
+        source_dir = os.path.join(output_dir, "connectivity_results")
+        results = run_complete_connectivity_analysis_unfiltered(
+            all_subjects_data=all,
+            times=time_ms,
+            labels=labels,
+            save_results=True,
+            output_dir=source_dir,
+        )

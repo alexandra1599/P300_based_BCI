@@ -325,8 +325,6 @@ def find_clusters(t_values, threshold):
 
 import pandas as pd
 import statsmodels.formula.api as smf
-from statsmodels.regression.mixed_linear_model import MixedLM
-import numpy as np
 
 
 def run_mixed_effects_analysis(
@@ -877,581 +875,248 @@ def compute_surface_laplacian_simple(epochs, montage, labels):
     return laplacian_epochs
 
 
-def n200_p300_temporal_relationship(
-    epochs, times, channel_idx, n200_window=(150, 250), p300_window=(300, 600)
+def extract_erp_features_multi_subject(
+    all_subjects_data, condition_key, channel_idx, n100_window, p300_window, times
 ):
     """
-    Analyze the temporal relationship between N200 and P300
+    Extract N100 and P300 features for all subjects with subject tracking.
 
-    Theory: N200 (conflict/mismatch) predicts P300 (evaluation) amplitude/latency
+    Parameters:
+    -----------
+    all_subjects_data : dict
+        Dictionary with subject IDs as keys
+    condition_key : str
+        e.g., 'nback_pre_target_all'
+    channel_idx : int
+        Channel to analyze
+    n100_window : tuple
+        (start, end) in ms for N100
+    p300_window : tuple
+        (start, end) in ms for P300
+    times : array
+        Time vector in ms
+
+    Returns:
+    --------
+    DataFrame with columns: subject, trial, n100_amp, n100_lat, p300_amp, p300_lat, interval
     """
-    from scipy import stats
-
-    n200_mask = (times >= n200_window[0]) & (times <= n200_window[1])
+    n100_mask = (times >= n100_window[0]) & (times <= n100_window[1])
     p300_mask = (times >= p300_window[0]) & (times <= p300_window[1])
 
-    data = epochs[:, channel_idx, :]  # (samples, trials)
+    all_features = []
 
-    # Extract N200 and P300 characteristics per trial
-    n200_amps = []
-    n200_lats = []
-    p300_amps = []
-    p300_lats = []
+    for subj_id, subj_data in all_subjects_data.items():
+        # Extract data: (time, channels, trials) -> (time, trials)
+        data = subj_data[condition_key][:, channel_idx, :]
+        n_trials = data.shape[1]
 
-    for trial in range(data.shape[1]):
-        # N200 (negative peak)
-        n200_signal = data[n200_mask, trial]
-        n200_min_idx = np.argmin(n200_signal)
-        n200_amps.append(n200_signal[n200_min_idx])
-        n200_lats.append(times[n200_mask][n200_min_idx])
+        for trial in range(n_trials):
+            # N100 (negative peak)
+            n100_signal = data[n100_mask, trial]
+            n100_min_idx = np.argmin(n100_signal)
+            n100_amp = n100_signal[n100_min_idx]
+            n100_lat = times[n100_mask][n100_min_idx]
 
-        # P300 (positive peak)
-        p300_signal = data[p300_mask, trial]
-        p300_max_idx = np.argmax(p300_signal)
-        p300_amps.append(p300_signal[p300_max_idx])
-        p300_lats.append(times[p300_mask][p300_max_idx])
+            # P300 (positive peak)
+            p300_signal = data[p300_mask, trial]
+            p300_max_idx = np.argmax(p300_signal)
+            p300_amp = p300_signal[p300_max_idx]
+            p300_lat = times[p300_mask][p300_max_idx]
 
-    n200_amps = np.array(n200_amps)
-    n200_lats = np.array(n200_lats)
-    p300_amps = np.array(p300_amps)
-    p300_lats = np.array(p300_lats)
+            # Compute interval
+            interval = p300_lat - n100_lat
 
-    # Compute N200-P300 interval
-    n200_p300_interval = p300_lats - n200_lats
-
-    # Correlations
-    corr_amp, p_amp = stats.pearsonr(np.abs(n200_amps), p300_amps)
-    corr_lat, p_lat = stats.pearsonr(n200_lats, p300_lats)
-    corr_interval_amp, p_interval = stats.pearsonr(n200_p300_interval, p300_amps)
-
-    # Plot
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-
-    # 1. N200 amplitude vs P300 amplitude
-    ax = axes[0, 0]
-    ax.scatter(np.abs(n200_amps), p300_amps, alpha=0.6, s=40)
-    z = np.polyfit(np.abs(n200_amps), p300_amps, 1)
-    p_fit = np.poly1d(z)
-    x_fit = np.linspace(np.abs(n200_amps).min(), np.abs(n200_amps).max(), 100)
-    ax.plot(x_fit, p_fit(x_fit), "r--", linewidth=2)
-
-    ax.text(
-        0.05,
-        0.95,
-        f"r = {corr_amp:.3f}\np = {p_amp:.3g}",
-        transform=ax.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-    )
-
-    ax.set_xlabel("|N200| Amplitude (µV)")
-    ax.set_ylabel("P300 Amplitude (µV)")
-    ax.set_title("N200 vs P300 Amplitude")
-    ax.grid(True, alpha=0.3)
-
-    # 2. N200 latency vs P300 latency
-    ax = axes[0, 1]
-    ax.scatter(n200_lats, p300_lats, alpha=0.6, s=40, color="purple")
-    z = np.polyfit(n200_lats, p300_lats, 1)
-    p_fit = np.poly1d(z)
-    x_fit = np.linspace(n200_lats.min(), n200_lats.max(), 100)
-    ax.plot(x_fit, p_fit(x_fit), "r--", linewidth=2)
-
-    ax.text(
-        0.05,
-        0.95,
-        f"r = {corr_lat:.3f}\np = {p_lat:.3g}",
-        transform=ax.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-    )
-
-    ax.set_xlabel("N200 Latency (ms)")
-    ax.set_ylabel("P300 Latency (ms)")
-    ax.set_title("N200 vs P300 Latency")
-    ax.grid(True, alpha=0.3)
-
-    # 3. N200-P300 interval distribution
-    ax = axes[1, 0]
-    ax.hist(n200_p300_interval, bins=20, edgecolor="black", alpha=0.7, color="skyblue")
-    ax.axvline(
-        np.mean(n200_p300_interval),
-        color="r",
-        linestyle="--",
-        linewidth=2,
-        label=f"Mean: {np.mean(n200_p300_interval):.1f} ms",
-    )
-    ax.set_xlabel("N200-P300 Interval (ms)")
-    ax.set_ylabel("Count")
-    ax.set_title(
-        f"N200→P300 Temporal Separation\n(SD = {np.std(n200_p300_interval):.1f} ms)"
-    )
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # 4. Interval vs P300 amplitude
-    ax = axes[1, 1]
-    ax.scatter(n200_p300_interval, p300_amps, alpha=0.6, s=40, color="green")
-    z = np.polyfit(n200_p300_interval, p300_amps, 1)
-    p_fit = np.poly1d(z)
-    x_fit = np.linspace(n200_p300_interval.min(), n200_p300_interval.max(), 100)
-    ax.plot(x_fit, p_fit(x_fit), "r--", linewidth=2)
-
-    ax.text(
-        0.05,
-        0.95,
-        f"r = {corr_interval_amp:.3f}\np = {p_interval:.3g}",
-        transform=ax.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-    )
-
-    ax.set_xlabel("N200-P300 Interval (ms)")
-    ax.set_ylabel("P300 Amplitude (µV)")
-    ax.set_title("Temporal Separation vs P300 Strength")
-    ax.grid(True, alpha=0.3)
-
-    plt.suptitle("N200-P300 Component Interaction", fontsize=14, fontweight="bold")
-    plt.tight_layout()
-
-    return fig, {
-        "n200_amps": n200_amps,
-        "n200_lats": n200_lats,
-        "p300_amps": p300_amps,
-        "p300_lats": p300_lats,
-        "interval": n200_p300_interval,
-        "corr_amp": corr_amp,
-        "p_amp": p_amp,
-        "corr_lat": corr_lat,
-        "p_lat": p_lat,
-        "corr_interval_amp": corr_interval_amp,
-        "p_interval": p_interval,
-    }
-
-
-def create_n200_p300_comparison_summary(results, output_dir):
-    """
-    Create summary comparison across conditions
-    """
-
-    conditions = [
-        k for k in ["Pre", "Post", "Online"] if k in results and results[k] is not None
-    ]
-
-    if len(conditions) == 0:
-        print("No valid results to compare")
-        return
-
-    # Extract correlation values
-    correlations = []
-    p_values = []
-    intervals = []
-
-    for cond in conditions:
-        correlations.append(results[cond]["r_amplitude"])
-        p_values.append(results[cond]["p_amplitude"])
-        intervals.append(results[cond]["interval"].mean())
-
-    # Create summary figure
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-
-    # 1. Correlation coefficients
-    ax = axes[0]
-    colors = ["steelblue", "coral", "mediumseagreen"][: len(conditions)]
-    bars = ax.bar(
-        conditions,
-        correlations,
-        color=colors,
-        alpha=0.7,
-        edgecolor="black",
-        linewidth=2,
-    )
-    ax.axhline(y=0, color="black", linestyle="-", linewidth=1)
-    ax.set_ylabel("Correlation Coefficient (r)", fontsize=13, fontweight="bold")
-    ax.set_title("N200-P300 Amplitude Correlation", fontsize=14, fontweight="bold")
-    ax.grid(True, alpha=0.3, axis="y")
-
-    # Add significance stars
-    for i, (bar, r, p) in enumerate(zip(bars, correlations, p_values)):
-        sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else ""
-        if sig:
-            height = bar.get_height()
-            offset = 0.05 if height > 0 else -0.1
-            ax.text(
-                bar.get_x() + bar.get_width() / 2.0,
-                height + offset,
-                sig,
-                ha="center",
-                va="bottom" if height > 0 else "top",
-                fontsize=16,
-                fontweight="bold",
+            all_features.append(
+                {
+                    "subject": subj_id,
+                    "trial": trial,
+                    "n100_amp": n100_amp,
+                    "n100_lat": n100_lat,
+                    "p300_amp": p300_amp,
+                    "p300_lat": p300_lat,
+                    "n100_p300_interval": interval,
+                }
             )
 
-    # 2. P-values
-    ax = axes[1]
-    ax.bar(
-        conditions,
-        [-np.log10(p) for p in p_values],
-        color=colors,
-        alpha=0.7,
-        edgecolor="black",
-        linewidth=2,
-    )
-    ax.axhline(
-        y=-np.log10(0.05), color="red", linestyle="--", linewidth=2, label="p=0.05"
-    )
-    ax.axhline(
-        y=-np.log10(0.01), color="orange", linestyle="--", linewidth=2, label="p=0.01"
-    )
-    ax.axhline(
-        y=-np.log10(0.001),
-        color="darkred",
-        linestyle="--",
-        linewidth=2,
-        label="p=0.001",
-    )
-    ax.set_ylabel("-log₁₀(p-value)", fontsize=13, fontweight="bold")
-    ax.set_title("Statistical Significance", fontsize=14, fontweight="bold")
-    ax.legend(loc="best", fontsize=9)
-    ax.grid(True, alpha=0.3, axis="y")
-
-    # 3. Mean N200-P300 intervals
-    ax = axes[2]
-    ax.bar(
-        conditions, intervals, color=colors, alpha=0.7, edgecolor="black", linewidth=2
-    )
-    ax.set_ylabel("Mean Interval (ms)", fontsize=13, fontweight="bold")
-    ax.set_title("N200-P300 Temporal Separation", fontsize=14, fontweight="bold")
-    ax.grid(True, alpha=0.3, axis="y")
-
-    plt.suptitle(
-        "N200-P300 Correlation Comparison Across Conditions",
-        fontsize=16,
-        fontweight="bold",
-        y=0.98,
-    )
-    plt.tight_layout()
-
-    # Save
-    save_path = f"{output_dir}/n200_p300_comparison_summary.png"
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    print(f"\n✓ Saved comparison summary: {save_path}")
-    plt.show()
-    plt.close()
-
-    # Print summary table
-    print("\n" + "=" * 70)
-    print("N200-P300 CORRELATION SUMMARY")
-    print("=" * 70)
-    print(
-        f"{'Condition':<12} {'r':<10} {'p-value':<12} {'Interval (ms)':<15} {'Significance'}"
-    )
-    print("-" * 70)
-    for cond, r, p, intv in zip(conditions, correlations, p_values, intervals):
-        sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "n.s."
-        print(f"{cond:<12} {r:>9.3f} {p:>11.4f} {intv:>14.1f} {sig:>15}")
-    print("=" * 70)
+    return pd.DataFrame(all_features)
 
 
-def analyze_n200_p300_correlation(
-    erp_data,
-    channel_labels,
-    time_ms,
-    condition_name="Unknown",
-    n200_channels=None,
-    p300_channels=None,
-    data_format="time_ch_trials",
-):
+import pandas as pd
+from statsmodels.regression.mixed_linear_model import MixedLM
+import statsmodels.formula.api as smf
+
+
+def analyze_n100_p300_relationship(df):
     """
-    Proper N200-P300 correlation with correct electrode selection
+    Run mixed effects models to analyze N100-P300 relationships.
+
+    Parameters:
+    -----------
+    df : DataFrame
+        Output from extract_erp_features_multi_subject
+
+    Returns:
+    --------
+    Dictionary of model results
     """
+    results = {}
 
-    from scipy.stats import pearsonr
-
-    # ===== HANDLE DATA FORMAT =====
-    if data_format == "time_ch_trials":
-        print(f"Input shape: {erp_data.shape} (time, channels, trials)")
-        erp_data = np.transpose(erp_data, (2, 1, 0))  # → (trials, channels, time)
-        print(f"Transposed to: {erp_data.shape} (trials, channels, time)")
-
-    n_trials, n_channels, n_timepoints = erp_data.shape
-    print(
-        f"Working with: {n_trials} trials, {n_channels} channels, {n_timepoints} timepoints"
+    # Model 1: Does N100 amplitude predict P300 amplitude?
+    print("\n=== Model 1: N100 Amplitude → P300 Amplitude ===")
+    model1 = MixedLM.from_formula(
+        "p300_amp ~ n100_amp",  # Fixed effect
+        data=df,
+        groups=df["subject"],  # Random intercept per subject
     )
+    result1 = model1.fit(reml=True)
+    print(result1.summary())
+    results["n100_to_p300_amp"] = result1
 
-    # Default channel selections
-    if n200_channels is None:
-        n200_channels = ["FCZ"]
-    if p300_channels is None:
-        p300_channels = ["PZ"]
+    # Model 2: Does N100 latency predict P300 latency?
+    print("\n=== Model 2: N100 Latency → P300 Latency ===")
+    model2 = MixedLM.from_formula("p300_lat ~ n100_lat", data=df, groups=df["subject"])
+    result2 = model2.fit(reml=True)
+    print(result2.summary())
+    results["n100_to_p300_lat"] = result2
 
-    # Normalize channel labels
-    channel_labels_upper = [ch.upper() for ch in channel_labels]
-
-    # Find N200 channel
-    n200_ch_idx = None
-    n200_ch_name = None
-    for ch_name in n200_channels:
-        if ch_name in channel_labels_upper:
-            n200_ch_idx = channel_labels_upper.index(ch_name)
-            n200_ch_name = ch_name
-            break
-
-    # Find P300 channel
-    p300_ch_idx = None
-    p300_ch_name = None
-    for ch_name in p300_channels:
-        if ch_name in channel_labels_upper:
-            p300_ch_idx = channel_labels_upper.index(ch_name)
-            p300_ch_name = ch_name
-            break
-
-    if n200_ch_idx is None or p300_ch_idx is None:
-        print(f"⚠️ Required channels not found!")
-        print(f"   Available channels: {channel_labels}")
-        print(f"   N200 channels tried: {n200_channels}")
-        print(f"   P300 channels tried: {p300_channels}")
-        return None
-
-    print(f"\n{'='*70}")
-    print(f"N200-P300 CORRELATION ANALYSIS - {condition_name}")
-    print(f"{'='*70}")
-    print(f"N200 channel: {n200_ch_name} (frontocentral)")
-    print(f"P300 channel: {p300_ch_name} (parietal)")
-
-    if n200_ch_idx == p300_ch_idx:
-        print(f"⚠️ WARNING: Same channel used for both components!")
-    else:
-        print(f"✓ Using DIFFERENT electrodes - geometrically independent")
-
-    # ===== CORRECTED EXTRACTION =====
-
-    # Create time masks
-    n200_window = (time_ms >= 150) & (time_ms <= 250)
-    p300_window = (time_ms >= 300) & (time_ms <= 500)
-
-    print(f"\nExtracting N200 from {n200_ch_name}...")
-    print(f"  Time window: 150-250 ms ({n200_window.sum()} timepoints)")
-
-    # Extract N200 data: (trials, time_in_window)
-    n200_data = erp_data[:, n200_ch_idx, :]  # Shape: (trials, all_timepoints)
-    n200_data = n200_data[:, n200_window]  # Shape: (trials, time_in_window)
-    print(f"  N200 data shape: {n200_data.shape}")
-
-    # Find minimum (most negative) for each trial
-    n200_amps = np.min(n200_data, axis=1)  # Shape: (trials,)
-    n200_lat_indices = np.argmin(n200_data, axis=1)
-    n200_lats = time_ms[n200_window][n200_lat_indices]
-
-    print(f"\nExtracting P300 from {p300_ch_name}...")
-    print(f"  Time window: 300-500 ms ({p300_window.sum()} timepoints)")
-
-    # Extract P300 data: (trials, time_in_window)
-    p300_data = erp_data[:, p300_ch_idx, :]  # Shape: (trials, all_timepoints)
-    p300_data = p300_data[:, p300_window]  # Shape: (trials, time_in_window)
-    print(f"  P300 data shape: {p300_data.shape}")
-
-    # Find maximum (most positive) for each trial
-    p300_amps = np.max(p300_data, axis=1)  # Shape: (trials,)
-    p300_lat_indices = np.argmax(p300_data, axis=1)
-    p300_lats = time_ms[p300_window][p300_lat_indices]
-
-    # Calculate correlations
-    r, p_val = pearsonr(np.abs(n200_amps), p300_amps)
-
-    # Calculate N200-P300 interval
-    interval = p300_lats - n200_lats
-    r_interval, p_interval = pearsonr(interval, p300_amps)
-
-    print(f"\nResults:")
-    print(f"  N trials: {n_trials}")
-    print(f"  N200 amplitude range: [{n200_amps.min():.2f}, {n200_amps.max():.2f}] μV")
-    print(f"  P300 amplitude range: [{p300_amps.min():.2f}, {p300_amps.max():.2f}] μV")
-    print(f"  Mean interval: {interval.mean():.1f} ± {interval.std():.1f} ms")
-    print(f"\n  Amplitude correlation: r = {r:.3f}, p = {p_val:.4f}")
-    print(f"  Interval correlation: r = {r_interval:.3f}, p = {p_interval:.4f}")
-
-    sig = (
-        "***"
-        if p_val < 0.001
-        else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "n.s."
+    # Model 3: Does N100 amplitude predict N100-P300 interval?
+    print("\n=== Model 3: N100 Amplitude → Interval ===")
+    model3 = MixedLM.from_formula(
+        "n100_p300_interval ~ n100_amp", data=df, groups=df["subject"]
     )
-    print(f"  Significance: {sig}")
+    result3 = model3.fit(reml=True)
+    print(result3.summary())
+    results["n100_amp_to_interval"] = result3
 
-    # ===== VISUALIZATION =====
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    # Model 4: Does P300 amplitude predict interval?
+    print("\n=== Model 4: P300 Amplitude → Interval ===")
+    model4 = MixedLM.from_formula(
+        "n100_p300_interval ~ p300_amp", data=df, groups=df["subject"]
+    )
+    result4 = model4.fit(reml=True)
+    print(result4.summary())
+    results["p300_amp_to_interval"] = result4
 
-    # 1. Scatter: N200 vs P300 amplitude
+    # Model 5: Multiple predictors - N100 and P300 amplitudes predict interval
+    print("\n=== Model 5: N100 + P300 Amplitudes → Interval ===")
+    model5 = MixedLM.from_formula(
+        "n100_p300_interval ~ n100_amp + p300_amp", data=df, groups=df["subject"]
+    )
+    result5 = model5.fit(reml=True)
+    print(result5.summary())
+    results["both_amps_to_interval"] = result5
+
+    return results
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+def plot_n100_p300_relationship(df, results):
+    """Plot N100-P300 relationships with mixed effects fit."""
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    # Plot 1: N100 amp vs P300 amp
     ax = axes[0, 0]
-    ax.scatter(
-        np.abs(n200_amps),
-        p300_amps,
-        alpha=0.5,
-        s=50,
-        color="steelblue",
-        edgecolor="black",
-        linewidth=0.5,
-    )
+    for subj in df["subject"].unique():
+        subj_data = df[df["subject"] == subj]
+        ax.scatter(subj_data["n100_amp"], subj_data["p300_amp"], alpha=0.5, s=20)
 
-    # Regression line
-    z = np.polyfit(np.abs(n200_amps), p300_amps, 1)
-    p_fit = np.poly1d(z)
-    x_line = np.linspace(np.abs(n200_amps).min(), np.abs(n200_amps).max(), 100)
+    # Add regression line
+    coef = results["n100_to_p300_amp"].params["n100_amp"]
+    intercept = results["n100_to_p300_amp"].params["Intercept"]
+    x_range = np.linspace(df["n100_amp"].min(), df["n100_amp"].max(), 100)
     ax.plot(
-        x_line,
-        p_fit(x_line),
-        "r--",
-        alpha=0.8,
-        linewidth=2.5,
-        label=f"y = {z[0]:.2f}x + {z[1]:.2f}",
-    )
-
-    ax.text(
-        0.05,
-        0.95,
-        f"r = {r:.3f}\np = {p_val:.4f}\n{sig}",
-        transform=ax.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.9),
-        fontsize=11,
-        fontweight="bold",
-    )
-
-    ax.set_xlabel(
-        f"|N200| Amplitude at {n200_ch_name} (μV)", fontsize=12, fontweight="bold"
-    )
-    ax.set_ylabel(
-        f"P300 Amplitude at {p300_ch_name} (μV)", fontsize=12, fontweight="bold"
-    )
-    ax.set_title(
-        f"{condition_name}: N200-P300 Amplitude Correlation",
-        fontsize=13,
-        fontweight="bold",
-    )
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=10)
-
-    # 2. Grand average waveforms
-    ax = axes[0, 1]
-    grand_avg = np.mean(erp_data, axis=0)  # (channels, time)
-
-    ax.plot(
-        time_ms,
-        grand_avg[n200_ch_idx, :],
-        "b-",
-        linewidth=2.5,
-        label=f"{n200_ch_name} (N200)",
-        alpha=0.8,
-    )
-    ax.plot(
-        time_ms,
-        grand_avg[p300_ch_idx, :],
+        x_range,
+        intercept + coef * x_range,
         "r-",
-        linewidth=2.5,
-        label=f"{p300_ch_name} (P300)",
-        alpha=0.8,
+        linewidth=2,
+        label=f'β={coef:.3f}, p={results["n100_to_p300_amp"].pvalues["n100_amp"]:.4f}',
     )
+    ax.set_xlabel("N100 Amplitude (µV)")
+    ax.set_ylabel("P300 Amplitude (µV)")
+    ax.set_title("N100 → P300 Amplitude")
+    ax.legend()
+    ax.grid(alpha=0.3)
 
-    # Mark windows
-    ax.axvspan(150, 250, alpha=0.2, color="blue", label="N200 window")
-    ax.axvspan(300, 500, alpha=0.2, color="red", label="P300 window")
-    ax.axhline(y=0, color="k", linestyle="--", alpha=0.5, linewidth=1)
-    ax.axvline(x=0, color="k", linestyle="--", alpha=0.5, linewidth=1)
+    # Plot 2: N100 lat vs P300 lat
+    ax = axes[0, 1]
+    for subj in df["subject"].unique():
+        subj_data = df[df["subject"] == subj]
+        ax.scatter(subj_data["n100_lat"], subj_data["p300_lat"], alpha=0.5, s=20)
 
-    ax.set_xlabel("Time (ms)", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Amplitude (μV)", fontsize=12, fontweight="bold")
-    ax.set_title(
-        f"{condition_name}: Grand Average ERPs", fontsize=13, fontweight="bold"
+    coef = results["n100_to_p300_lat"].params["n100_lat"]
+    intercept = results["n100_to_p300_lat"].params["Intercept"]
+    x_range = np.linspace(df["n100_lat"].min(), df["n100_lat"].max(), 100)
+    ax.plot(
+        x_range,
+        intercept + coef * x_range,
+        "r-",
+        linewidth=2,
+        label=f'β={coef:.3f}, p={results["n100_to_p300_lat"].pvalues["n100_lat"]:.4f}',
     )
-    ax.legend(loc="best", fontsize=9)
-    ax.grid(True, alpha=0.3)
+    ax.set_xlabel("N100 Latency (ms)")
+    ax.set_ylabel("P300 Latency (ms)")
+    ax.set_title("N100 → P300 Latency")
+    ax.legend()
+    ax.grid(alpha=0.3)
 
-    # 3. Interval distribution
+    # Plot 3: N100 amp vs Interval
     ax = axes[1, 0]
-    ax.hist(interval, bins=25, edgecolor="black", alpha=0.7, color="mediumseagreen")
-    ax.axvline(
-        interval.mean(),
-        color="red",
-        linestyle="--",
-        linewidth=2.5,
-        label=f"Mean: {interval.mean():.1f} ms",
-    )
-    ax.axvline(
-        np.median(interval),
-        color="orange",
-        linestyle="--",
-        linewidth=2.5,
-        label=f"Median: {np.median(interval):.1f} ms",
-    )
+    for subj in df["subject"].unique():
+        subj_data = df[df["subject"] == subj]
+        ax.scatter(
+            subj_data["n100_amp"], subj_data["n100_p300_interval"], alpha=0.5, s=20
+        )
 
-    ax.set_xlabel("N200-P300 Interval (ms)", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Trial Count", fontsize=12, fontweight="bold")
-    ax.set_title(
-        f"Temporal Separation (SD = {interval.std():.1f} ms)",
-        fontsize=13,
-        fontweight="bold",
+    coef = results["n100_amp_to_interval"].params["n100_amp"]
+    intercept = results["n100_amp_to_interval"].params["Intercept"]
+    x_range = np.linspace(df["n100_amp"].min(), df["n100_amp"].max(), 100)
+    ax.plot(
+        x_range,
+        intercept + coef * x_range,
+        "r-",
+        linewidth=2,
+        label=f'β={coef:.3f}, p={results["n100_amp_to_interval"].pvalues["n100_amp"]:.4f}',
     )
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3, axis="y")
+    ax.set_xlabel("N100 Amplitude (µV)")
+    ax.set_ylabel("N100-P300 Interval (ms)")
+    ax.set_title("N100 Amplitude → Interval")
+    ax.legend()
+    ax.grid(alpha=0.3)
 
-    # 4. Interval vs P300 amplitude
+    # Plot 4: P300 amp vs Interval
     ax = axes[1, 1]
-    ax.scatter(
-        interval,
-        p300_amps,
-        alpha=0.5,
-        s=50,
-        color="purple",
-        edgecolor="black",
-        linewidth=0.5,
+    for subj in df["subject"].unique():
+        subj_data = df[df["subject"] == subj]
+        ax.scatter(
+            subj_data["p300_amp"],
+            subj_data["n100_p300_interval"],
+            alpha=0.5,
+            s=20,
+            label=subj if subj == df["subject"].unique()[0] else "",
+        )
+
+    coef = results["p300_amp_to_interval"].params["p300_amp"]
+    intercept = results["p300_amp_to_interval"].params["Intercept"]
+    x_range = np.linspace(df["p300_amp"].min(), df["p300_amp"].max(), 100)
+    ax.plot(
+        x_range,
+        intercept + coef * x_range,
+        "r-",
+        linewidth=2,
+        label=f'β={coef:.3f}, p={results["p300_amp_to_interval"].pvalues["p300_amp"]:.4f}',
     )
+    ax.set_xlabel("P300 Amplitude (µV)")
+    ax.set_ylabel("N100-P300 Interval (ms)")
+    ax.set_title("P300 Amplitude → Interval")
+    ax.legend()
+    ax.grid(alpha=0.3)
 
-    z = np.polyfit(interval, p300_amps, 1)
-    p_fit = np.poly1d(z)
-    x_line = np.linspace(interval.min(), interval.max(), 100)
-    ax.plot(x_line, p_fit(x_line), "r--", alpha=0.8, linewidth=2.5)
-
-    ax.text(
-        0.05,
-        0.95,
-        f"r = {r_interval:.3f}\np = {p_interval:.4f}",
-        transform=ax.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.9),
-        fontsize=11,
-        fontweight="bold",
-    )
-
-    ax.set_xlabel("N200-P300 Interval (ms)", fontsize=12, fontweight="bold")
-    ax.set_ylabel("P300 Amplitude (μV)", fontsize=12, fontweight="bold")
-    ax.set_title("Temporal Separation vs P300 Strength", fontsize=13, fontweight="bold")
-    ax.grid(True, alpha=0.3)
-
-    plt.suptitle(
-        f"{condition_name}: N200-P300 Component Interaction",
-        fontsize=15,
-        fontweight="bold",
-        y=0.995,
-    )
     plt.tight_layout()
-
-    return {
-        "condition": condition_name,
-        "n200_channel": n200_ch_name,
-        "p300_channel": p300_ch_name,
-        "same_channel": (n200_ch_idx == p300_ch_idx),
-        "n_trials": n_trials,
-        "n200_amplitudes": n200_amps,
-        "n200_latencies": n200_lats,
-        "p300_amplitudes": p300_amps,
-        "p300_latencies": p300_lats,
-        "interval": interval,
-        "r_amplitude": r,
-        "p_amplitude": p_val,
-        "r_interval": r_interval,
-        "p_interval": p_interval,
-        "figure": fig,
-    }
+    return fig
 
 
 def identify_early_components(
@@ -1838,20 +1503,22 @@ def identify_early_components(
 
 
 def hemispheric_lateralization_analysis(
-    epochs,
-    times,
+    all_subjects_data,
+    condition_key,
+    left_channels,
+    right_channels,
     labels,
-    left_channels=["P3", "CP1", "C3"],
-    right_channels=["P4", "CP2", "C4"],
+    times,
+    p300_window=(300, 600),
 ):
     """
-    Compare left vs right hemisphere P300 responses
-
-    Lateralization Index (LI) = (Left - Right) / (Left + Right)
-    LI > 0: Left dominance
-    LI < 0: Right dominance
+    Hemispheric lateralization analysis using mixed effects models with visualization.
     """
     from scipy import stats
+    import pandas as pd
+    from statsmodels.regression.mixed_linear_model import MixedLM
+    import matplotlib.pyplot as plt
+    import numpy as np
 
     # Find channel indices
     labels_upper = [l.upper() for l in labels]
@@ -1866,126 +1533,355 @@ def hemispheric_lateralization_analysis(
         if ch.upper() in labels_upper
     ]
 
-    if not left_idx or not right_idx:
-        raise ValueError("Could not find matching left/right channels")
+    # Prepare data for MEM and collect waveforms
+    data_list = []
+    p300_mask = (times >= p300_window[0]) & (times <= p300_window[1])
 
-    # Average left and right hemispheres
-    left_data = epochs[:, left_idx, :].mean(axis=1)  # (samples, trials)
-    right_data = epochs[:, right_idx, :].mean(axis=1)
+    # Store subject-averaged waveforms for plotting
+    left_waveforms = []
+    right_waveforms = []
 
-    # Grand averages
-    left_avg = left_data.mean(axis=1)
-    right_avg = right_data.mean(axis=1)
+    for subj_id, subj_data in all_subjects_data.items():
+        # Extract condition data: (time, channels, trials)
+        epochs = subj_data[condition_key]
 
-    # Compute lateralization index per trial
-    p300_window = (times >= 300) & (times <= 600)
-    left_p300 = np.max(left_data[p300_window, :], axis=0)
-    right_p300 = np.max(right_data[p300_window, :], axis=0)
+        # Average left and right hemispheres
+        left_data = epochs[:, left_idx, :].mean(axis=1)  # (time, trials)
+        right_data = epochs[:, right_idx, :].mean(axis=1)
 
-    li = (left_p300 - right_p300) / (left_p300 + right_p300 + 1e-10)
+        # Store subject-averaged waveform
+        left_waveforms.append(left_data.mean(axis=1))
+        right_waveforms.append(right_data.mean(axis=1))
 
-    # Statistical test
-    t_stat, p_val = stats.ttest_rel(left_p300, right_p300)
+        n_trials = left_data.shape[1]
 
-    # Plot
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        for trial in range(n_trials):
+            # Extract P300 peak for this trial
+            left_p300 = np.max(left_data[p300_mask, trial])
+            right_p300 = np.max(right_data[p300_mask, trial])
 
-    # 1. Left vs Right waveforms
-    ax = axes[0, 0]
-    ax.plot(times, left_avg, "b-", linewidth=2.5, label="Left Hemisphere", alpha=0.8)
-    ax.plot(times, right_avg, "r-", linewidth=2.5, label="Right Hemisphere", alpha=0.8)
-    ax.axvspan(300, 600, alpha=0.1, color="yellow", label="P300 window")
-    ax.axhline(0, color="k", linestyle="-", linewidth=0.5)
-    ax.axvline(0, color="k", linestyle="--", linewidth=1)
-    ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Amplitude (µV)")
-    ax.set_title("Hemispheric P300 Comparison")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+            # Compute lateralization index
+            li = (left_p300 - right_p300) / (left_p300 + right_p300 + 1e-10)
 
-    # 2. Lateralization index distribution
-    ax = axes[0, 1]
-    ax.hist(li, bins=20, edgecolor="black", alpha=0.7, color="purple")
-    ax.axvline(0, color="k", linestyle="-", linewidth=2, label="No lateralization")
-    ax.axvline(
-        np.mean(li),
-        color="r",
-        linestyle="--",
-        linewidth=2,
-        label=f"Mean LI: {np.mean(li):.3f}",
+            data_list.append(
+                {
+                    "subject": subj_id,
+                    "trial": trial,
+                    "left_p300": left_p300,
+                    "right_p300": right_p300,
+                    "lateralization_index": li,
+                }
+            )
+
+    df = pd.DataFrame(data_list)
+
+    # Convert waveforms to arrays
+    left_waveforms = np.array(left_waveforms)  # (n_subjects, timepoints)
+    right_waveforms = np.array(right_waveforms)
+
+    # Grand averages across subjects
+    left_grand_avg = left_waveforms.mean(axis=0)
+    right_grand_avg = right_waveforms.mean(axis=0)
+
+    # SEM across subjects
+    left_sem = left_waveforms.std(axis=0) / np.sqrt(left_waveforms.shape[0])
+    right_sem = right_waveforms.std(axis=0) / np.sqrt(right_waveforms.shape[0])
+
+    # Reshape to long format for MEM
+    df_long = []
+    for _, row in df.iterrows():
+        df_long.append(
+            {
+                "subject": row["subject"],
+                "trial": row["trial"],
+                "amplitude": row["left_p300"],
+                "hemisphere": "left",
+            }
+        )
+        df_long.append(
+            {
+                "subject": row["subject"],
+                "trial": row["trial"],
+                "amplitude": row["right_p300"],
+                "hemisphere": "right",
+            }
+        )
+
+    df_long = pd.DataFrame(df_long)
+
+    # Mixed effects model
+    print("\n=== Mixed Effects Model: Hemisphere Effect ===")
+    model = MixedLM.from_formula(
+        "amplitude ~ hemisphere", data=df_long, groups=df_long["subject"]
     )
-    ax.set_xlabel("Lateralization Index")
-    ax.set_ylabel("Count")
-    ax.set_title(f"Lateralization Distribution\n(t={t_stat:.2f}, p={p_val:.4f})")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    result = model.fit(reml=True)
+    print(result.summary())
 
-    # 3. Left vs Right amplitude scatter
-    ax = axes[1, 0]
-    ax.scatter(left_p300, right_p300, alpha=0.6, s=40)
+    # Extract results
+    hem_effect = result.params["hemisphere[T.right]"]
+    hem_pval = result.pvalues["hemisphere[T.right]"]
 
-    # Unity line
-    max_val = max(left_p300.max(), right_p300.max())
-    ax.plot([0, max_val], [0, max_val], "k--", linewidth=1, label="Equal")
+    # One-sample test on LI
+    subject_li = df.groupby("subject")["lateralization_index"].mean()
+    t_stat_li, p_val_li = stats.ttest_1samp(subject_li, 0)
 
-    # Correlation
-    corr, p_corr = stats.pearsonr(left_p300, right_p300)
-    ax.text(
-        0.05,
-        0.95,
-        f"r = {corr:.3f}\np = {p_corr:.3g}",
-        transform=ax.transAxes,
-        verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-    )
-
-    ax.set_xlabel("Left Hemisphere P300 (µV)")
-    ax.set_ylabel("Right Hemisphere P300 (µV)")
-    ax.set_title("Left vs Right P300 Amplitude")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # 4. Box plot + statistical test
-    ax = axes[1, 1]
-    bp = ax.boxplot(
-        [left_p300, right_p300], labels=["Left", "Right"], patch_artist=True
-    )
-    bp["boxes"][0].set_facecolor("lightblue")
-    bp["boxes"][1].set_facecolor("lightcoral")
-
-    # Add significance indicator
-    if p_val < 0.001:
-        sig_str = "***"
-    elif p_val < 0.01:
-        sig_str = "**"
-    elif p_val < 0.05:
-        sig_str = "*"
-    else:
-        sig_str = "ns"
-
-    y_max = max(left_p300.max(), right_p300.max())
-    ax.plot([1, 2], [y_max * 1.1, y_max * 1.1], "k-", linewidth=1.5)
-    ax.text(1.5, y_max * 1.15, sig_str, ha="center", fontsize=16)
-
-    ax.set_ylabel("P300 Amplitude (µV)")
-    ax.set_title(f"Hemisphere Comparison\n(p = {p_val:.4f})")
-    ax.grid(True, alpha=0.3, axis="y")
-
-    plt.suptitle("Hemispheric Lateralization Analysis", fontsize=14, fontweight="bold")
-    plt.tight_layout()
-
-    interpretation = (
-        "Left-lateralized"
-        if np.mean(li) > 0.1
-        else "Right-lateralized" if np.mean(li) < -0.1 else "Bilateral (symmetric)"
-    )
-
-    return fig, {
-        "lateralization_index": li,
-        "mean_li": np.mean(li),
-        "left_p300": left_p300,
-        "right_p300": right_p300,
-        "t_stat": t_stat,
-        "p_value": p_val,
-        "interpretation": interpretation,
+    return {
+        "df": df,
+        "df_long": df_long,
+        "mem_result": result,
+        "subject_li": subject_li,
+        "mean_li": subject_li.mean(),
+        "t_stat_li": t_stat_li,
+        "p_val_li": p_val_li,
+        "hemisphere_effect": hem_effect,
+        "hemisphere_pval": hem_pval,
+        "left_grand_avg": left_grand_avg,
+        "right_grand_avg": right_grand_avg,
+        "left_sem": left_sem,
+        "right_sem": right_sem,
     }
+
+
+def plot_hemisphere_waveforms_comparison(results_dict, times):
+    """
+    Plot left vs right hemisphere waveforms for PRE, POST, ONLINE
+
+    Parameters:
+    -----------
+    results_dict : dict
+        {'pre': results_pre, 'post': results_post, 'online': results_online}
+    """
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12))
+
+    conditions = ["pre", "post", "online"]
+    titles = ["PRE: Baseline", "POST: After Training", "ONLINE: Real-time Feedback"]
+
+    for idx, (ax, condition, title) in enumerate(zip(axes, conditions, titles)):
+        results = results_dict[condition]
+
+        # Get waveform data from results
+        left_avg = results["left_grand_avg"]
+        right_avg = results["right_grand_avg"]
+        left_sem = results["left_sem"]
+        right_sem = results["right_sem"]
+
+        # Plot
+        ax.plot(
+            times, left_avg, "b-", linewidth=2.5, label="Left Hemisphere", alpha=0.8
+        )
+        ax.fill_between(
+            times, left_avg - left_sem, left_avg + left_sem, color="b", alpha=0.2
+        )
+
+        ax.plot(
+            times, right_avg, "r-", linewidth=2.5, label="Right Hemisphere", alpha=0.8
+        )
+        ax.fill_between(
+            times, right_avg - right_sem, right_avg + right_sem, color="r", alpha=0.2
+        )
+
+        # P300 window
+        ax.axvspan(300, 600, alpha=0.1, color="yellow", label="P300 window")
+
+        # Add statistics
+        hem_pval = results["hemisphere_pval"]
+        hem_effect = results["hemisphere_effect"]
+
+        if hem_pval < 0.001:
+            sig_str = "***"
+        elif hem_pval < 0.01:
+            sig_str = "**"
+        elif hem_pval < 0.05:
+            sig_str = "*"
+        elif hem_pval < 0.10:
+            sig_str = "†"  # Trend
+        else:
+            sig_str = "ns"
+
+        ax.text(
+            0.98,
+            0.95,
+            f"{sig_str}\nβ = {hem_effect:.3f} µV\np = {hem_pval:.4f}",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+            fontsize=11,
+        )
+
+        ax.axhline(0, color="k", linestyle="-", linewidth=0.5)
+        ax.axvline(0, color="k", linestyle="--", linewidth=1)
+        ax.set_ylabel("Amplitude (µV)", fontsize=12)
+        ax.set_title(title, fontsize=13, fontweight="bold")
+        ax.legend(loc="upper left", fontsize=10)
+        ax.grid(True, alpha=0.3)
+
+        if idx == 2:  # Last panel
+            ax.set_xlabel("Time (ms)", fontsize=12)
+
+    plt.suptitle(
+        "Hemispheric P300 Comparison Across Conditions",
+        fontsize=15,
+        fontweight="bold",
+        y=0.995,
+    )
+    plt.tight_layout()
+    return fig
+
+
+def plot_hemisphere_effects_barplot(results_dict):
+    """
+    Bar plot showing hemisphere effect sizes across conditions with error bars.
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+
+    conditions = ["PRE", "POST", "ONLINE"]
+    effects = []
+    errors = []
+    pvals = []
+
+    for cond in ["pre", "post", "online"]:
+        result = results_dict[cond]["mem_result"]
+        beta = result.params["hemisphere[T.right]"]
+        se = result.bse["hemisphere[T.right]"]
+        pval = result.pvalues["hemisphere[T.right]"]
+
+        effects.append(beta)
+        errors.append(se)
+        pvals.append(pval)
+
+    # Create bar plot
+    x = np.arange(len(conditions))
+    colors = [
+        "#d62728" if p < 0.05 else "#ff7f0e" if p < 0.10 else "#7f7f7f" for p in pvals
+    ]
+
+    bars = ax.bar(
+        x,
+        effects,
+        yerr=errors,
+        capsize=10,
+        color=colors,
+        edgecolor="black",
+        linewidth=1.5,
+        alpha=0.7,
+    )
+
+    # Add significance stars
+    for i, (eff, err, pval) in enumerate(zip(effects, errors, pvals)):
+        if pval < 0.001:
+            sig = "***"
+        elif pval < 0.01:
+            sig = "**"
+        elif pval < 0.05:
+            sig = "*"
+        elif pval < 0.10:
+            sig = "†"
+        else:
+            sig = "ns"
+
+        y_pos = eff + err + 0.1 if eff > 0 else eff - err - 0.1
+        ax.text(i, y_pos, sig, ha="center", fontsize=16, fontweight="bold")
+
+        # Add p-value below
+        ax.text(i, -1.4, f"p={pval:.3f}", ha="center", fontsize=9)
+
+    # Zero line
+    ax.axhline(0, color="black", linestyle="-", linewidth=1.5)
+
+    # Labels
+    ax.set_xticks(x)
+    ax.set_xticklabels(conditions, fontsize=12, fontweight="bold")
+    ax.set_ylabel("Hemisphere Effect (Right - Left) [µV]", fontsize=12)
+    ax.set_title(
+        "Hemispheric Lateralization Across Conditions\n(Negative = Left-dominant)",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax.grid(True, alpha=0.3, axis="y")
+    ax.set_ylim(-1.6, 0.5)
+
+    # Legend
+    from matplotlib.patches import Patch
+
+    legend_elements = [
+        Patch(facecolor="#d62728", alpha=0.7, label="p < 0.05 (Significant)"),
+        Patch(facecolor="#ff7f0e", alpha=0.7, label="0.05 ≤ p < 0.10 (Trend)"),
+        Patch(facecolor="#7f7f7f", alpha=0.7, label="p ≥ 0.10 (Not significant)"),
+    ]
+    ax.legend(handles=legend_elements, loc="lower right", fontsize=9)
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_subject_hemisphere_comparison(results_dict):
+    """
+    Box plots showing left vs right for each condition with individual subjects.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    conditions = ["pre", "post", "online"]
+    titles = ["PRE", "POST", "ONLINE"]
+
+    for ax, cond, title in zip(axes, conditions, titles):
+        results = results_dict[cond]
+        df = results["df"]
+
+        # Get subject-averaged data
+        subject_left = df.groupby("subject")["left_p300"].mean()
+        subject_right = df.groupby("subject")["right_p300"].mean()
+
+        # Box plot
+        bp = ax.boxplot(
+            [subject_left, subject_right],
+            labels=["Left", "Right"],
+            patch_artist=True,
+            widths=0.6,
+        )
+        bp["boxes"][0].set_facecolor("lightblue")
+        bp["boxes"][1].set_facecolor("lightcoral")
+
+        # Overlay individual subjects
+        for left, right in zip(subject_left, subject_right):
+            ax.plot(
+                [1, 2],
+                [left, right],
+                "o-",
+                color="gray",
+                alpha=0.6,
+                linewidth=1.5,
+                markersize=8,
+            )
+
+        # Add significance
+        pval = results["hemisphere_pval"]
+        y_max = max(subject_left.max(), subject_right.max())
+
+        ax.plot([1, 2], [y_max * 1.1, y_max * 1.1], "k-", linewidth=1.5)
+
+        if pval < 0.001:
+            sig_str = "***"
+        elif pval < 0.01:
+            sig_str = "**"
+        elif pval < 0.05:
+            sig_str = "*"
+        elif pval < 0.10:
+            sig_str = "†"
+        else:
+            sig_str = "ns"
+
+        ax.text(1.5, y_max * 1.15, sig_str, ha="center", fontsize=18)
+        ax.text(1.5, y_max * 1.25, f"p = {pval:.4f}", ha="center", fontsize=10)
+
+        ax.set_ylabel("P300 Amplitude (µV)", fontsize=12)
+        ax.set_title(
+            f"{title}\n(n={len(subject_left)} subjects)", fontsize=12, fontweight="bold"
+        )
+        ax.grid(True, alpha=0.3, axis="y")
+
+    plt.suptitle(
+        "Individual Subject Hemisphere Comparison", fontsize=14, fontweight="bold"
+    )
+    plt.tight_layout()
+    return fig

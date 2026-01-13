@@ -498,7 +498,17 @@ def norm_1020(s):
 
 
 def main():
-    num_sub = int(input("How many subjects do you want to study ? \n"))
+    SUBJECT_IDS = [
+        401,
+        402,
+        202,
+        312,
+        403,
+        203,
+    ]  # subject IDs
+    num_sub = len(
+        SUBJECT_IDS
+    )  # int(input("How many subjects do you want to study ? \n"))
 
     # ===== STORAGE FOR ALL SUBJECTS =====
     all_subjects_data = {}
@@ -515,7 +525,7 @@ def main():
         connectivity_post_target, connectivity_post_nontarget = [], []
         connectivity_online_target, connectivity_online_nontarget = [], []
 
-        ID = int(input("Enter Subject ID (e.g., 102): "))
+        ID = SUBJECT_IDS[sub]  # int(input("Enter Subject ID (e.g., 102): "))
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         logs_dir = os.path.join(
             "/home/alexandra-admin/Documents/Offline/offline_logs", f"sub-{ID}"
@@ -540,9 +550,16 @@ def main():
             session_target, session_nontarget = [], []
             model_input_target, model_input_nontarget = [], []
             connect_t, connect_nont = [], []
-
-            task = int(input("Do you want to load ?\n [1]Offline\n [2] Online\n"))
-            model_filter = int(
+            if s == 0:
+                task = (
+                    1  # int(input("Do you want to load ?\n [1]Offline\n [2] Online\n"))
+                )
+            if s == 1:
+                task = 1
+            if s == 2:
+                task = 2
+            model_filter = 1
+            """int(
                 input(
                     "Do you want to use non-causal(offline) or causal(online) filter ?\n [1]Offline\n [2] Online\n"
                 )
@@ -550,9 +567,10 @@ def main():
             print(f"\n=== Loading Session {s+1} ===")
             session_input = input("Session (1 = Relaxation, 2 = tACS): ").strip()
             session_map = {"1": "Relaxation", "2": "tACS"}
-            session = session_map.get(session_input, session_input)
+            """
+            session = "Relaxation"  # session_map.get(session_input, session_input)
 
-            print("\nType options:")
+            """print("\nType options:")
             type_options = [
                 "Eyes Closed pre",
                 "Eyes Closed post",
@@ -570,7 +588,7 @@ def main():
                 "EOG",
             ]
             for i, opt in enumerate(type_options):
-                print(f"{i + 1}: {opt}")
+                print(f"{i + 1}: {opt}")"""
             # type_index = int(input("Type of the session (number): "))
             # data_type = type_options[type_index - 1]
             if s == 0:
@@ -921,17 +939,17 @@ def main():
 
     print("\n✅ COMBINED data from all subjects:")
     if nback_pre_target_all is not None:
-        print("  nback_pre_target_all:", nback_pre_target_all.shape)
+        print("nback_pre_target_all:", nback_pre_target_all.shape)
     if nback_pre_nontarget_all is not None:
-        print("  nback_pre_nontarget_all:", nback_pre_nontarget_all.shape)
+        print("nback_pre_nontarget_all:", nback_pre_nontarget_all.shape)
     if nback_post_target_all is not None:
-        print("  nback_post_target_all:", nback_post_target_all.shape)
+        print("nback_post_target_all:", nback_post_target_all.shape)
     if nback_post_nontarget_all is not None:
-        print("  nback_post_nontarget_all:", nback_post_nontarget_all.shape)
+        print("nback_post_nontarget_all:", nback_post_nontarget_all.shape)
     if nback_online_target_all is not None:
-        print("  online_target:", nback_online_target_all.shape)
+        print("online_target:", nback_online_target_all.shape)
     if nback_online_nontarget_all is not None:
-        print("  online_nontarget:", nback_online_nontarget_all.shape)
+        print("online_nontarget:", nback_online_nontarget_all.shape)
 
     plot_number = int(input("How many topoplot do y ou want ?"))
 

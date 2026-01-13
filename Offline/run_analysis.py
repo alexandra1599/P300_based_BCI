@@ -18,6 +18,7 @@ from metrics import (
     n1_p3_ptp,
     single_trial_latency_jitter,
     woody_align_window,
+    plot_p300_amplitude_comparison,
 )
 from filter_trials import filter_trials
 from cluster import (
@@ -271,6 +272,7 @@ def run_analysis(
 
             plt.show()  # <-- Change this
             plt.pause(0.1)
+
             """
             # Latency distribution
             print("\n=== Latency Distribution Analysis Pre ===")
@@ -431,6 +433,15 @@ def run_analysis(
             pre_p300 = np.mean(clean_pre, axis=1)
             post_p300 = np.mean(clean_post, axis=1)
             on_p300 = np.mean(clean_on, axis=1)
+
+            # Amplitude Distribution Per Trial
+            fig, data = plot_p300_amplitude_comparison(
+                all_subjects_data=all,
+                times=time_ms,
+                channel="Pz",
+                p300_window=(250, 600),
+                output_dir="erp_figures",
+            )
 
             m_pre = p3_metrics(time_ms, pre_p300)  # blue
             m_post = p3_metrics(time_ms, post_p300)  # red
@@ -680,9 +691,11 @@ def run_analysis(
             )
 
             # Create plot
-            fig = plot_n100_p300_relationship(df_target, results)
+            fig, df_filtered = plot_n100_p300_relationship(df_target, results)
+
+            # Now you can save the figure:
+            fig.savefig(save_path, dpi=300, bbox_inches="tight")
             plt.show()
-            fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
             # Analyze for Post condition
             print("\n=== POST ===")
@@ -711,9 +724,12 @@ def run_analysis(
             )
 
             # Create plot
-            fig = plot_n100_p300_relationship(df_target, results)
+            # Create plot
+            fig, df_filtered = plot_n100_p300_relationship(df_target, results)
+
+            # Now you can save the figure:
+            fig.savefig(save_path, dpi=300, bbox_inches="tight")
             plt.show()
-            fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
             # If online data available
             if comparison == 1:
@@ -747,9 +763,12 @@ def run_analysis(
                 )
 
                 # Create plot
-                fig = plot_n100_p300_relationship(df_target, results)
+                # Create plot
+                fig, df_filtered = plot_n100_p300_relationship(df_target, results)
+
+                # Now you can save the figure:
+                fig.savefig(save_path, dpi=300, bbox_inches="tight")
                 plt.show()
-                fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
         except Exception as e:
             print(f"❌ Error in N100-P300 analysis: {e}")
@@ -1779,20 +1798,14 @@ def run_analysis(
         print("SOURCE LOCALIZATION ANALYSIS")
         print("=" * 70)
 
+        output_dir = "/home/alexandra-admin/Documents/Offline/offline_logs"
+
         # Check available data
-        available_data = {}
-        if p300_pre is not None:
-            available_data["Pre"] = p300_pre
-        if p300_post is not None:
-            available_data["Post"] = p300_post
-        if comparison == 1 and p300_online is not None:
-            available_data["Online"] = p300_online
-
-        if len(available_data) == 0:
-            print("❌ No P300 data available")
-            return
-
-        print(f"\nAvailable conditions: {list(available_data.keys())}")
+        p300_data_dict = {
+            "Pre": p300_pre,
+            "POST": p300_post,  # all["nback_post_target_all"],
+            "ONLINE": p300_online,  # all["nback_online_target_all"],
+        }
 
         # Create output directory
         source_dir = os.path.join(output_dir, "source_localization")
@@ -1814,7 +1827,7 @@ def run_analysis(
 
         # Run source localization
         all_components = run_source_localization_analysis(
-            p300_data_dict=available_data,
+            p300_data_dict=p300_data_dict,
             labels=labels,
             time_ms=time_ms,
             output_dir=source_dir,

@@ -1,5 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+import pandas as pd
+import statsmodels.formula.api as smf
+from statsmodels.regression.mixed_linear_model import MixedLM
 
 
 def time_frequency_analysis(epochs, fs, channel_idx, freqs=np.arange(1, 30, 1)):
@@ -78,12 +83,6 @@ def time_frequency_analysis(epochs, fs, channel_idx, freqs=np.arange(1, 30, 1)):
     plt.show()
 
     return fig, power_plot, f_plot
-
-
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-import numpy as np
-import matplotlib.pyplot as plt
 
 
 def find_optimal_clusters(features, max_k=6):
@@ -321,10 +320,6 @@ def find_clusters(t_values, threshold):
         )
 
     return clusters
-
-
-import pandas as pd
-import statsmodels.formula.api as smf
 
 
 def run_mixed_effects_analysis(
@@ -940,12 +935,6 @@ def extract_erp_features_multi_subject(
 
     return pd.DataFrame(all_features)
 
-
-import pandas as pd
-from statsmodels.regression.mixed_linear_model import MixedLM
-import statsmodels.formula.api as smf
-
-
 def analyze_n100_p300_relationship(df):
     """
     Run mixed effects models to analyze N100-P300 relationships.
@@ -1009,7 +998,6 @@ def analyze_n100_p300_relationship(df):
     return results
 
 
-import matplotlib.pyplot as plt
 import seaborn as sns
 
 

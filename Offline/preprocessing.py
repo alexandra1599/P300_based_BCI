@@ -47,7 +47,7 @@ def apply_streaming_filters(data, filter_bank, filter_state=None):
     Applies notch and bandpass filters in sequence using lfilter with state.
 
     Parameters:
-        data (ndarray): EEG data (channels x samples)
+        data (ndarray): EEG data (samples x ch)
         filter_bank (dict): Output from initialize_filter_bank
         filter_state (dict or None): Previous zi values for filters (optional)
 
@@ -78,7 +78,7 @@ def apply_streaming_filters(data, filter_bank, filter_state=None):
         filtered, zf = lfilter(b, a, filtered, axis=1, zi=zi)
         updated_state[key] = zf
 
-    avg = np.mean(filtered, axis=1, keepdims=True)
+    avg = np.mean(filtered, axis=0, keepdims=True)
     filtered = filtered - avg
 
     # --- Apply bandpass filter ---

@@ -1117,6 +1117,7 @@ def run_complete_connectivity_analysis_unfiltered(
 
     print("\n" + "=" * 70)
     print("ANALYSIS COMPLETE!")
+    
     print("=" * 70)
 
     return {

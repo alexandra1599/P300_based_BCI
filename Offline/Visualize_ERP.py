@@ -1014,20 +1014,41 @@ import seaborn as sns
 
 
 def plot_n100_p300_relationship(df, results):
-    """Plot N100-P300 relationships with mixed effects fit."""
+    """Plot N100-P300 relationships with mixed effects fit, keeping only valid trials."""
+
+    # 🔧 FILTER: Keep only trials where N100 < 0 and P300 > 0
+    df_filtered = df[(df["n100_amp"] < 0) & (df["p300_amp"] > 0)].copy()
+
+    n_original = len(df)
+    n_filtered = len(df_filtered)
+    n_removed = n_original - n_filtered
+    pct_removed = 100 * n_removed / n_original
+
+    print(f"\n📊 Data Filtering Summary:")
+    print(f"   Original trials: {n_original}")
+    print(f"   Valid trials (N100<0 & P300>0): {n_filtered}")
+    print(f"   Removed trials: {n_removed} ({pct_removed:.1f}%)")
+
+    # Count per subject
+    print(f"\n   Trials per subject after filtering:")
+    for subj in df_filtered["subject"].unique():
+        n_subj = len(df_filtered[df_filtered["subject"] == subj])
+        print(f"      Subject {subj}: {n_subj} trials")
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
     # Plot 1: N100 amp vs P300 amp
     ax = axes[0, 0]
-    for subj in df["subject"].unique():
-        subj_data = df[df["subject"] == subj]
+    for subj in df_filtered["subject"].unique():
+        subj_data = df_filtered[df_filtered["subject"] == subj]
         ax.scatter(subj_data["n100_amp"], subj_data["p300_amp"], alpha=0.5, s=20)
 
-    # Add regression line
+    # Add regression line from original model (or refit if you prefer)
     coef = results["n100_to_p300_amp"].params["n100_amp"]
     intercept = results["n100_to_p300_amp"].params["Intercept"]
-    x_range = np.linspace(df["n100_amp"].min(), df["n100_amp"].max(), 100)
+    x_range = np.linspace(
+        df_filtered["n100_amp"].min(), df_filtered["n100_amp"].max(), 100
+    )
     ax.plot(
         x_range,
         intercept + coef * x_range,
@@ -1037,19 +1058,24 @@ def plot_n100_p300_relationship(df, results):
     )
     ax.set_xlabel("N100 Amplitude (µV)")
     ax.set_ylabel("P300 Amplitude (µV)")
-    ax.set_title("N100 → P300 Amplitude")
+
+    ax.set_title(f"N100 → P300 Amplitude (n={n_filtered} valid trials)")
     ax.legend()
     ax.grid(alpha=0.3)
+    ax.axhline(0, color="k", linestyle="--", alpha=0.3)
+    ax.axvline(0, color="k", linestyle="--", alpha=0.3)
 
     # Plot 2: N100 lat vs P300 lat
     ax = axes[0, 1]
-    for subj in df["subject"].unique():
-        subj_data = df[df["subject"] == subj]
+    for subj in df_filtered["subject"].unique():
+        subj_data = df_filtered[df_filtered["subject"] == subj]
         ax.scatter(subj_data["n100_lat"], subj_data["p300_lat"], alpha=0.5, s=20)
 
     coef = results["n100_to_p300_lat"].params["n100_lat"]
     intercept = results["n100_to_p300_lat"].params["Intercept"]
-    x_range = np.linspace(df["n100_lat"].min(), df["n100_lat"].max(), 100)
+    x_range = np.linspace(
+        df_filtered["n100_lat"].min(), df_filtered["n100_lat"].max(), 100
+    )
     ax.plot(
         x_range,
         intercept + coef * x_range,
@@ -1059,21 +1085,23 @@ def plot_n100_p300_relationship(df, results):
     )
     ax.set_xlabel("N100 Latency (ms)")
     ax.set_ylabel("P300 Latency (ms)")
-    ax.set_title("N100 → P300 Latency")
+    ax.set_title(f"N100 → P300 Latency (n={n_filtered})")
     ax.legend()
     ax.grid(alpha=0.3)
 
     # Plot 3: N100 amp vs Interval
     ax = axes[1, 0]
-    for subj in df["subject"].unique():
-        subj_data = df[df["subject"] == subj]
+    for subj in df_filtered["subject"].unique():
+        subj_data = df_filtered[df_filtered["subject"] == subj]
         ax.scatter(
             subj_data["n100_amp"], subj_data["n100_p300_interval"], alpha=0.5, s=20
         )
 
     coef = results["n100_amp_to_interval"].params["n100_amp"]
     intercept = results["n100_amp_to_interval"].params["Intercept"]
-    x_range = np.linspace(df["n100_amp"].min(), df["n100_amp"].max(), 100)
+    x_range = np.linspace(
+        df_filtered["n100_amp"].min(), df_filtered["n100_amp"].max(), 100
+    )
     ax.plot(
         x_range,
         intercept + coef * x_range,
@@ -1083,25 +1111,27 @@ def plot_n100_p300_relationship(df, results):
     )
     ax.set_xlabel("N100 Amplitude (µV)")
     ax.set_ylabel("N100-P300 Interval (ms)")
-    ax.set_title("N100 Amplitude → Interval")
+    ax.set_title(f"N100 Amplitude → Interval (n={n_filtered})")
     ax.legend()
     ax.grid(alpha=0.3)
+    ax.axvline(0, color="k", linestyle="--", alpha=0.3)
 
     # Plot 4: P300 amp vs Interval
     ax = axes[1, 1]
-    for subj in df["subject"].unique():
-        subj_data = df[df["subject"] == subj]
+    for subj in df_filtered["subject"].unique():
+        subj_data = df_filtered[df_filtered["subject"] == subj]
         ax.scatter(
             subj_data["p300_amp"],
             subj_data["n100_p300_interval"],
             alpha=0.5,
             s=20,
-            label=subj if subj == df["subject"].unique()[0] else "",
         )
 
     coef = results["p300_amp_to_interval"].params["p300_amp"]
     intercept = results["p300_amp_to_interval"].params["Intercept"]
-    x_range = np.linspace(df["p300_amp"].min(), df["p300_amp"].max(), 100)
+    x_range = np.linspace(
+        df_filtered["p300_amp"].min(), df_filtered["p300_amp"].max(), 100
+    )
     ax.plot(
         x_range,
         intercept + coef * x_range,
@@ -1111,12 +1141,13 @@ def plot_n100_p300_relationship(df, results):
     )
     ax.set_xlabel("P300 Amplitude (µV)")
     ax.set_ylabel("N100-P300 Interval (ms)")
-    ax.set_title("P300 Amplitude → Interval")
+    ax.set_title(f"P300 Amplitude → Interval (n={n_filtered})")
     ax.legend()
     ax.grid(alpha=0.3)
+    ax.axvline(0, color="k", linestyle="--", alpha=0.3)
 
     plt.tight_layout()
-    return fig
+    return fig, df_filtered
 
 
 def identify_early_components(

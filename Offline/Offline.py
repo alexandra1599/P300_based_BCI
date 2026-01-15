@@ -1,5 +1,22 @@
+import os
+import sys
+import datetime
 import numpy as np
-import io, sys, os, datetime, atexit
+from load_data import (
+    get_available_subjects,
+    load_subject_data,
+    OFFLINE_SESSIONS,
+    ONLINE_SESSIONS,
+)
+
+# Import all your processing functions
+from filtering import filtering
+from target_epochs import target_epochs
+from extract_features import extract_features
+from helpers import Tee
+
+import numpy as np
+import sys, os, datetime
 from sklearn.model_selection import (
     GridSearchCV,
     LeaveOneGroupOut,
@@ -7,10 +24,8 @@ from sklearn.model_selection import (
     cross_val_predict,
 )
 from sklearn.metrics import (
-    confusion_matrix,
     make_scorer,
     accuracy_score,
-    precision_recall_fscore_support,
 )
 import config
 from sklearn.metrics import (
@@ -20,49 +35,41 @@ from sklearn.metrics import (
     precision_recall_curve,
 )
 from xgboost import XGBClassifier
-from load_project_data import load_project_data
-from extract_data import extract_data
-from remove_aux import remove_aux
 from filtering import filtering
 from target_epochs import target_epochs
 from run_analysis import run_analysis
 from sklearn.model_selection import (
     GridSearchCV,
-    train_test_split,
-    StratifiedKFold,
     cross_val_score,
     cross_val_predict,
     LeaveOneGroupOut,
 )
 from XDawn import (
-    p300_window_to_samples,
-    compute_metrics,
-    best_threshold_by_tpr_tnr_product,
     XdawnFeaturizer,
     run_leakage_safe_cv_with_xdawn,
 )
-from sklearn.metrics import classification_report, confusion_matrix, make_scorer
-from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.metrics import make_scorer
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from extract_features import extract_features
 from xgboost import XGBClassifier
-from tuneboost import tune_xgboost
 import pickle
-from sklearn.base import BaseEstimator, TransformerMixin, clone
-from pylsl import resolve_stream, StreamInlet
-from cca import get_cca_spatialfilter, rank_channels_component, load_trained_model_cca
+from cca import rank_channels_component
 from helpers import (
-    build_epochs_flat_y_groups,
-    TemporalCCAFeaturizer,
-    oof_proba_with_logo_pipeline,
+    select_channels,
+    print_metrics,
+    build_X_y_groups,
+    tpr_tnr_product,
+    per_run_balance,
+    tpr_tnr_from_labels,
+    CCAWaveformProjector,
+    feature_adapter,
+    build_epoch_cube_y_groups,
+    norm_1020,
     Tee,
 )
-from sklearn.cross_decomposition import CCA
 
 import matplotlib.pyplot as plt
-import mne
-from matplotlib.cm import ScalarMappable  # Add colorbar explicitly
-from matplotlib.colors import Normalize  # Add colorbar explicitly
 from Topoplot import (
     common_vlim,
     p3_mean_amplitude,
@@ -72,769 +79,430 @@ from Topoplot import (
 )
 
 
-def oof_proba_with_logo(X, y, groups, best_params):
-    logo = LeaveOneGroupOut()
-    oof = np.zeros_like(y, dtype=float)
-    for tr_idx, te_idx in logo.split(X, y, groups):
-        X_tr, y_tr = X[tr_idx], y[tr_idx]
-        X_te = X[te_idx]
-        # per-fold pos weight (safer when class balance varies per fold)
-        pos = int((y_tr == 1).sum())
-        neg = int((y_tr == 0).sum())
-        spw = neg / max(pos, 1)
-        model = XGBClassifier(
-            random_state=42,
-            n_jobs=-1,
-            eval_metric="logloss",
-            scale_pos_weight=spw,
-            **best_params,
-        )
-        model.fit(X_tr, y_tr)
-        oof[te_idx] = model.predict_proba(X_te)[:, 1]
-    return oof
-
-
-def select_channels(raw, labels, keep_channels=None):
-    labels = list(labels)
-    if keep_channels is None:
-        idx = list(range(len(labels)))
-        kept_labels = labels
-    else:
-        keep_list = list(keep_channels)  # keep order if list provided
-        keep_set = set(keep_list)
-        idx = [i for i, ch in enumerate(labels) if ch in keep_set]
-        missing = [ch for ch in keep_list if ch not in labels]
-        if missing:
-            raise ValueError(f"Requested channels not found: {missing}")
-        # preserve original labels order as they appear in 'labels'
-        kept_labels = [labels[i] for i in idx]
-
-    if raw.shape[0] == len(labels):
-        eeg = raw[idx, :]
-    elif raw.shape[1] == len(labels):
-        eeg = raw[:, idx]
-    else:
-        raise ValueError(
-            f"labels length ({len(labels)}) doesn't match raw shape {raw.shape}"
-        )
-
-    return eeg, kept_labels, idx
-
-
-def get_channel_from_lsl(stream_type="EEG"):
+def process_subject_data(subject_id: int, mode: str = "offline"):
     """
-    Retrieve channel names from an LSL stream.
-
-    Parameters:
-        stream_type (str): The type of stream to resolve (default is 'EEG').
-
-    Returns:
-        list: A list of channel names from the resolved LSL stream.
+    Process data for a single subject using new loader.
+    Matches the structure of your original main() function.
     """
-    print(f"Looking for a {stream_type} stream...")
-
-    # Resolve the stream
-    streams = resolve_stream("type", stream_type)
-    if not streams:
-        raise RuntimeError(f"No {stream_type} stream found.")
-
-    # Create an inlet to the first available stream
-    inlet = StreamInlet(streams[0])
-
-    # Get stream info and channel names
-    stream_info = inlet.info()
-    desc = stream_info.desc()
-    channel_names = []
-
-    # Parse the channel names from the stream description
-    channels = desc.child("channels").child("channel")
-    while channels.name() == "channel":
-        channel_names.append(channels.child_value("label"))
-        channels = channels.next_sibling()
-
-    return channel_names
-
-
-def print_metrics(y_true, y_pred):
-    cm = confusion_matrix(y_true, y_pred)
-    tn, fp, fn, tp = cm.ravel()
-
-    acc = (tp + tn) / (tp + tn + fp + fn)
-    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0  # Sensitivity / Recall
-    tnr = tn / (tn + fp) if (tn + fp) > 0 else 0  # Specificity
-
-    print(f"Accuracy: {acc:.2f}")
-    print(f"TPR: {tpr:.2f}")
-    print(f"TNR: {tnr:.2f}")
-
-
-def extract_features_runwise(runs):
-    """
-    runs: list-like, each element holds all trials for that run
-    returns: list of 2D arrays, each (n_trials_in_run, n_features)
-    """
-    out = []
-    for r in runs:
-        out.append(extract_features(r))
-    return out
-
-
-def build_X_y_groups(runs_target, runs_nontarget, max_runs=None, run_start_index=1):
-    """
-    Concatenate features across runs and build a groups vector (one group per run).
-    """
-    if max_runs is None:
-        max_runs = min(len(runs_target), len(runs_nontarget))
-    else:
-        max_runs = min(max_runs, len(runs_target), len(runs_nontarget))
-
-    X_list, y_list, g_list = [], [], []
-
-    # Precompute features per run so we only extract once
-    feats_t = extract_features_runwise(runs_target[:max_runs])
-    feats_nt = extract_features_runwise(runs_nontarget[:max_runs])
-
-    for i in range(max_runs):
-        Xt = feats_t[i]  # (n_pos_i, n_feat)
-        Xnt = feats_nt[i]  # (n_neg_i, n_feat)
-        X_run = np.vstack([Xt, Xnt])  # (n_pos_i+n_neg_i, n_feat)
-        y_run = np.hstack(
-            [np.ones(Xt.shape[0], dtype=int), np.zeros(Xnt.shape[0], dtype=int)]
-        )
-        grp = np.full(y_run.shape[0], run_start_index + i, dtype=int)
-
-        X_list.append(X_run)
-        y_list.append(y_run)
-        g_list.append(grp)
-
-    X = np.vstack(X_list)
-    y = np.hstack(y_list)
-    groups = np.hstack(g_list)
-    return X, y, groups
-
-
-# --- custom metric: TPR x TNR ---
-def tpr_tnr_product(y_true, y_pred):
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0  # sensitivity
-    tnr = tn / (tn + fp) if (tn + fp) > 0 else 0.0  # specificity
-    return tpr * tnr
-
-
-def print_metrics(y_true, y_pred, label=""):
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-    acc = accuracy_score(y_true, y_pred)
-    prec, rec, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="binary", zero_division=0
+    # Setup logging
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    logs_dir = os.path.join(
+        "/home/alexandra-admin/Documents/Offline/offline_logs", f"sub-{subject_id}"
     )
-    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    tnr = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    prod = tpr * tnr
-    if label:
-        print(label)
-    print(
-        f"  Acc={acc:.3f}  Prec={prec:.3f}  Rec/TPR={tpr:.3f}  TNR={tnr:.3f}  F1={f1:.3f}  TPR×TNR={prod:.3f}"
-    )
+    os.makedirs(logs_dir, exist_ok=True)
+    log_path = os.path.join(logs_dir, f"offline_train_{timestamp}.txt")
 
-
-def per_run_balance(y, groups):
-    for r in np.unique(groups):
-        m = groups == r
-        pos = int((y[m] == 1).sum())
-        neg = int((y[m] == 0).sum())
-        print(
-            f"Run {int(r)}: n={m.sum()}  pos={pos}  neg={neg}  pos_rate={pos/(pos+neg):.2f}"
-        )
-
-
-def tpr_tnr_from_labels(y_true, y_pred):
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-    tpr = tp / (tp + fn) if (tp + fn) else 0.0
-    tnr = tn / (tn + fp) if (tn + fp) else 0.0
-    return tpr, tnr, tpr * tnr
-
-
-def binarize(p, thr):
-    return (p >= thr).astype(int)
-
-
-def runwise_nested_threshold_eval(
-    X,
-    y,
-    groups,
-    best_params,
-    base_pos_weight=None,
-    thresholds=np.linspace(0.05, 0.95, 91),
-):
-    """
-    Outer CV: leave one run out as test.
-    Inner CV on the training runs to choose a threshold that maximizes TPR×TNR,
-    then apply that threshold on the held-out run.
-    """
-    logo = LeaveOneGroupOut()
-    results = []
-    for test_run in np.unique(groups):
-        te = groups == test_run
-        tr = ~te
-
-        X_tr, y_tr, g_tr = X[tr], y[tr], groups[tr]
-        X_te, y_te = X[te], y[te]
-
-        # out-of-fold probs on training runs for inner threshold search
-        inner_logo = LeaveOneGroupOut()
-        oof = np.zeros_like(y_tr, dtype=float)
-
-        pos = int((y_tr == 1).sum())
-        neg = int((y_tr == 0).sum())
-        spw = base_pos_weight if base_pos_weight is not None else (neg / max(pos, 1))
-        model = XGBClassifier(
-            random_state=42,
-            n_jobs=-1,
-            eval_metric="logloss",
-            scale_pos_weight=spw,
-            **best_params,
-        )
-
-        for tr_idx, va_idx in inner_logo.split(X_tr, y_tr, g_tr):
-            model.fit(X_tr[tr_idx], y_tr[tr_idx])
-            oof[va_idx] = model.predict_proba(X_tr[va_idx])[:, 1]
-
-        # pick threshold on training data only
-        best_thr, best_prod = 0.5, -1.0
-        for thr in thresholds:
-            y_hat = binarize(oof, thr)
-            _, _, prod = tpr_tnr_from_labels(y_tr, y_hat)
-            if prod > best_prod:
-                best_prod, best_thr = prod, thr
-
-        # retrain on all training runs, test on held-out run with chosen thr
-        model.fit(X_tr, y_tr)
-        p_te = model.predict_proba(X_te)[:, 1]
-        y_hat_te = binarize(p_te, best_thr)
-        tpr, tnr, prod = tpr_tnr_from_labels(y_te, y_hat_te)
-        results.append(
-            {
-                "run": int(test_run),
-                "thr": float(best_thr),
-                "TPR": float(tpr),
-                "TNR": float(tnr),
-                "TPRxTNR": float(prod),
-            }
-        )
-
-    mean_prod = np.mean([r["TPRxTNR"] for r in results])
-    std_prod = np.std([r["TPRxTNR"] for r in results])
-    print("\nNested run-wise (leakage-safe) results:")
-    for r in sorted(results, key=lambda d: d["run"]):
-        print(
-            f"  Run {r['run']}: thr={r['thr']:.2f}  TPR={r['TPR']:.3f}  TNR={r['TNR']:.3f}  TPR×TNR={r['TPRxTNR']:.3f}"
-        )
-    print(f"  Mean TPR×TNR={mean_prod:.3f}  Std={std_prod:.3f}")
-    return results
-
-
-def make_balanced_sample_weights(y):
-    """
-    Returns per-sample weights ~ N / (n_classes * n_class[y_i]).
-    Heavier weight for the minority class.
-    """
-    y = np.asarray(y).ravel()
-    classes = np.unique(y)
-    n = len(y)
-    n_classes = len(classes)
-
-    # counts per class
-    counts = {c: int((y == c).sum()) for c in classes}
-    # avoid divide-by-zero
-    for c in classes:
-        if counts[c] == 0:
-            counts[c] = 1
-
-    # weight for each class
-    w_class = {c: n / (n_classes * counts[c]) for c in classes}
-    # map to per-sample weights
-    return np.array([w_class[c] for c in y], dtype=float)
-
-
-def project_cca_waveforms(E: np.ndarray, Wc: np.ndarray) -> np.ndarray:
-    """
-    Project EEG epochs onto CCA spatial weights to get component time series.
-    E:  (S, C, T)  samples x channels x trials
-    Wc: (C, K)     channels x components
-    Returns:
-        Y: (S, K, T)  component waveforms for each trial
-    """
-    S, C, T = E.shape
-    K = Wc.shape[1]
-    Y = np.empty((S, K, T), dtype=float)
-    for t in range(T):
-        # (S,C) @ (C,K) -> (S,K)
-        Y[:, :, t] = E[:, :, t] @ Wc
-    return Y
-
-
-from sklearn.base import BaseEstimator, TransformerMixin
-
-
-class CCAWaveformProjector(BaseEstimator, TransformerMixin):
-    """
-    Fit:    Wc from get_cca_spatialfilter on TRAIN only.
-    Transform: project epochs with project_cca_waveforms -> (S,K,T),
-               then either flatten to (T, S*K) or call a user feature fn.
-    """
-
-    def __init__(
-        self,
-        samples,
-        channels,
-        n_components=3,
-        max_iter=5000,
-        flatten=True,
-        feature_fn=None,
-    ):
-        self.samples = int(samples)
-        self.channels = int(channels)
-        self.n_components = int(n_components)
-        self.max_iter = int(max_iter)
-        self.flatten = bool(flatten)
-        self.feature_fn = (
-            feature_fn  # e.g., extract_features; expects (S, K, T) -> (T, F)
-        )
-        self.Wc_ = None
-
-    def _to_cube(self, X):  # X: (T, S*C) -> (S, C, T)
-        T = X.shape[0]
-        return X.reshape(T, self.samples, self.channels).transpose(1, 2, 0)
-
-    def fit(self, X, y):
-        E = self._to_cube(X)  # (S,C,T)
-        self.Wc_, _, _ = get_cca_spatialfilter(
-            E, y, n_components=self.n_components, max_iter=self.max_iter
-        )
-        return self
-
-    def transform(self, X):
-        E = self._to_cube(X)  # (S,C,T)
-        Y = project_cca_waveforms(E, self.Wc_)  # (S,K,T)
-        if self.feature_fn is not None:
-            # Your function should accept (S,K,T) and return (T,F)
-            return self.feature_fn(Y)
-        if self.flatten:
-            # (S,K,T) -> (T, S*K)
-            return Y.reshape(Y.shape[0] * Y.shape[1], Y.shape[2]).T
-        # raw (S,K,T) is not a valid sklearn X; choose flatten=True or provide feature_fn
-        raise ValueError("Set flatten=True or provide feature_fn to return (T, F).")
-
-
-def feature_adapter(Y):
-    # If extract_features returns 3D, force (T, F):
-    Z = extract_features(Y)  # must produce per-trial features
-    if Z.ndim == 3:  # e.g., (S', C', T)
-        Z = Z.reshape(-1, Z.shape[-1]).T  # (T, S'*C')
-    return Z  # must be (T, F)
-
-
-def build_epoch_cube_y_groups(runs_target, runs_nontarget, max_runs=None, start_gid=1):
-    if max_runs is None:
-        max_runs = min(len(runs_target), len(runs_nontarget))
-
-    S0, C0, _ = runs_target[0].shape
-    E_list, y_list, g_list = [], [], []
-    gid = start_gid
-    for i in range(max_runs):
-        Et = runs_target[i]
-        En = runs_nontarget[i]
-        E_run = np.concatenate([Et, En], axis=2)  # (S,C,Tt+Tn)
-        y_run = np.hstack([np.ones(Et.shape[2], int), np.zeros(En.shape[2], int)])
-        g_run = np.full(E_run.shape[2], gid, int)
-        E_list.append(E_run)
-        y_list.append(y_run)
-        g_list.append(g_run)
-        gid += 1
-
-    E = np.concatenate(E_list, axis=2)
-    y = np.hstack(y_list)
-    groups = np.hstack(g_list)
-    return E, y, groups, S0, C0
-
-
-def aucs_overall(y_true, y_prob):
-    """Overall (OOF) AUCs."""
-    roc_auc = roc_auc_score(y_true, y_prob)
-    pr_auc = average_precision_score(y_true, y_prob)  # = PR-AUC
-    prevalence = np.mean(y_true)  # PR baseline
-    return dict(roc_auc=roc_auc, pr_auc=pr_auc, pr_baseline=prevalence)
-
-
-def aucs_per_run(y_true, y_prob, groups):
-    """Per-run AUCs; returns list of dicts (skip runs with single-class y)."""
-    out = []
-    for r in np.unique(groups):
-        m = groups == r
-        y_r, p_r = y_true[m], y_prob[m]
-        # Need both classes present; otherwise AUC is undefined.
-        if len(np.unique(y_r)) < 2:
-            out.append(dict(run=int(r), roc_auc=np.nan, pr_auc=np.nan))
-            continue
-        out.append(
-            dict(
-                run=int(r),
-                roc_auc=roc_auc_score(y_r, p_r),
-                pr_auc=average_precision_score(y_r, p_r),
-            )
-        )
-    return out
-
-
-def norm_1020(s):
-    return (
-        s.replace("FP", "Fp")
-        .replace("FZ", "Fz")
-        .replace("CZ", "Cz")
-        .replace("PZ", "Pz")
-        .replace("POZ", "POz")
-        .replace("OZ", "Oz")
-    )
-
-
-def main():
-    SUBJECT_IDS = [
-        401,
-        402,
-        202,
-        312,
-        403,
-        203,
-    ]  # subject IDs
-    num_sub = len(
-        SUBJECT_IDS
-    )  # int(input("How many subjects do you want to study ? \n"))
-
-    # ===== STORAGE FOR ALL SUBJECTS =====
-    all_subjects_data = {}
-
-    for sub in range(num_sub):
-        # ===== RESET EVERYTHING PER SUBJECT =====
-        nback_pre_target, nback_pre_nontarget = [], []
-        nback_post_target, nback_post_nontarget = [], []
-        nback_online_target, nback_online_nontarget = [], []
-
-        model_pre_target, model_pre_nontarget = [], []
-        model_post_target, model_post_nontarget = [], []
-        connectivity_pre_target, connectivity_pre_nontarget = [], []
-        connectivity_post_target, connectivity_post_nontarget = [], []
-        connectivity_online_target, connectivity_online_nontarget = [], []
-
-        ID = SUBJECT_IDS[sub]  # int(input("Enter Subject ID (e.g., 102): "))
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        logs_dir = os.path.join(
-            "/home/alexandra-admin/Documents/Offline/offline_logs", f"sub-{ID}"
-        )
-        os.makedirs(logs_dir, exist_ok=True)
-        log_path = os.path.join(logs_dir, f"offline_train_{timestamp}.txt")
-
-        log_file = open(log_path, "w", buffering=1, encoding="utf-8")
+    with open(log_path, "w", buffering=1, encoding="utf-8") as log_file:
         old_stdout, old_stderr = sys.stdout, sys.stderr
         sys.stdout = Tee(sys.stdout, log_file)
         sys.stderr = Tee(sys.stderr, log_file)
 
-        np.set_printoptions(precision=3, suppress=True)
-        print(f"📄 Logging *everything* to: {log_path}")
+        try:
+            np.set_printoptions(precision=3, suppress=True)
+            print(f"📄 Logging to: {log_path}")
+            print(f"\n{'='*60}")
+            print(f"Processing Subject {subject_id}")
+            print(f"{'='*60}\n")
 
-        n_sessions = 3  # int(
-        #  input("How many sessions do you want to load for this subject? ")
-        # )
+            # ===== RESET EVERYTHING PER SUBJECT =====
+            nback_pre_target, nback_pre_nontarget = [], []
+            nback_post_target, nback_post_nontarget = [], []
+            nback_online_target, nback_online_nontarget = [], []
 
-        for s in range(n_sessions):
-            # ===== RESET PER SESSION =====
-            session_target, session_nontarget = [], []
-            model_input_target, model_input_nontarget = [], []
-            connect_t, connect_nont = [], []
-            if s == 0:
-                task = (
-                    1  # int(input("Do you want to load ?\n [1]Offline\n [2] Online\n"))
-                )
-            if s == 1:
+            model_pre_target, model_pre_nontarget = [], []
+            model_post_target, model_post_nontarget = [], []
+
+            connectivity_pre_target, connectivity_pre_nontarget = [], []
+            connectivity_post_target, connectivity_post_nontarget = [], []
+            connectivity_online_target, connectivity_online_nontarget = [], []
+
+            # Load all sessions for this subject
+            subject_data = load_subject_data(subject_id, mode=mode)
+
+            # Processing parameters
+            fs = 512
+            do_car = 1  # Apply CAR
+            model_filter = 1  # Offline filter
+            session = "Relaxation"  # Session type
+
+            online_channel_names = ["FZ", "CZ", "PZ", "P3", "P4", "POZ"]
+
+            # Get labels from first available session
+            labels = None
+            for sess_name, (eeg_runs, marker_runs, sess_labels) in subject_data.items():
+                if sess_labels:
+                    labels = sess_labels
+                    break
+
+            if labels is None:
+                print("❌ No labels found in any session!")
+                return None
+
+            # ===== Process each session type =====
+            # Session mapping based on your original code:
+            # s=0: Nbackpre (4 runs)
+            # s=1: Nback + relax (8 runs)
+            # s=2: Nback online (8 runs)
+
+            # Process Nbackpre (ses-S001)
+            if "Nbackpre" in subject_data:
+                print("\n" + "=" * 60)
+                print("Processing Nbackpre (Pre-training)")
+                print("=" * 60)
+
+                eeg_runs, marker_runs, _ = subject_data["Nbackpre"]
                 task = 1
-            if s == 2:
-                task = 2
-            model_filter = 1
-            """int(
-                input(
-                    "Do you want to use non-causal(offline) or causal(online) filter ?\n [1]Offline\n [2] Online\n"
-                )
+
+                for run_idx, (eeg_dict, marker_dict) in enumerate(
+                    zip(eeg_runs, marker_runs)
+                ):
+                    print(f"\n  Run {run_idx + 1}/{len(eeg_runs)}:")
+
+                    eeg = eeg_dict["data"]
+                    timestamps = eeg_dict["timestamps"]
+                    m_data = marker_dict["values"]
+                    m_time = marker_dict["timestamps"]
+
+                    print(f"    EEG shape: {eeg.shape}")
+                    print(
+                        f"    Markers: {len(m_data)} events, unique: {np.unique(m_data)}"
+                    )
+
+                    # Apply filtering - NOW RETURNS UPDATED LABELS
+                    filtered_eeg, filtered_labels = filtering(
+                        eeg,
+                        session=session,
+                        filter=model_filter,
+                        labels=labels,
+                        fs=fs,
+                        do_car=do_car,
+                    )
+
+                    # Use filtered_labels for channel selection
+                    eeg_channels, kept_labels, kept_idx = select_channels(
+                        filtered_eeg, filtered_labels, online_channel_names
+                    )
+
+                    # Extract epochs
+                    segments_target, segments_nontarget = target_epochs(
+                        filtered_eeg, m_data, m_time, fs, timestamps, task
+                    )
+
+                    # Connectivity (unfiltered)
+                    con_target, con_nontarget = target_epochs(
+                        eeg, m_data, m_time, fs, timestamps, task
+                    )
+                    con_target = np.delete(con_target, np.arange(32, 39), axis=1)
+                    con_nontarget = np.delete(con_nontarget, np.arange(32, 39), axis=1)
+
+                    # Model input (selected channels)
+                    starget, snontarget = target_epochs(
+                        eeg_channels, m_data, m_time, fs, timestamps, task
+                    )
+
+                    # Store
+                    nback_pre_target.append(segments_target)
+                    nback_pre_nontarget.append(segments_nontarget)
+                    connectivity_pre_target.append(con_target)
+                    connectivity_pre_nontarget.append(con_nontarget)
+                    model_pre_target.append(starget)
+                    model_pre_nontarget.append(snontarget)
+
+                    print(
+                        f"    Target epochs: {segments_target.shape}, Non-target: {segments_nontarget.shape}"
+                    )
+
+            # Process Nbackpost (ses-S005) - this is "Nback + relax" in original
+            if "Nbackpost" in subject_data:
+                print("\n" + "=" * 60)
+                print("Processing Nbackpost (Post-training)")
+                print("=" * 60)
+
+                eeg_runs, marker_runs, _ = subject_data["Nbackpost"]
+                task = 1
+
+                for run_idx, (eeg_dict, marker_dict) in enumerate(
+                    zip(eeg_runs, marker_runs)
+                ):
+                    print(f"\n  Run {run_idx + 1}/{len(eeg_runs)}:")
+
+                    eeg = eeg_dict["data"]
+                    timestamps = eeg_dict["timestamps"]
+                    m_data = marker_dict["values"]
+                    m_time = marker_dict["timestamps"]
+
+                    print(f"    EEG shape: {eeg.shape}")
+                    print(
+                        f"    Markers: {len(m_data)} events, unique: {np.unique(m_data)}"
+                    )
+
+                    filtered_eeg, filtered_labels = filtering(
+                        eeg,
+                        session=session,
+                        filter=model_filter,
+                        labels=labels,
+                        fs=fs,
+                        do_car=do_car,
+                    )
+
+                    eeg_channels, kept_labels, kept_idx = select_channels(
+                        filtered_eeg, filtered_labels, online_channel_names
+                    )
+
+                    segments_target, segments_nontarget = target_epochs(
+                        filtered_eeg, m_data, m_time, fs, timestamps, task
+                    )
+
+                    con_target, con_nontarget = target_epochs(
+                        eeg, m_data, m_time, fs, timestamps, task
+                    )
+                    con_target = np.delete(con_target, np.arange(32, 39), axis=1)
+                    con_nontarget = np.delete(con_nontarget, np.arange(32, 39), axis=1)
+
+                    starget, snontarget = target_epochs(
+                        eeg_channels, m_data, m_time, fs, timestamps, task
+                    )
+
+                    nback_post_target.append(segments_target)
+                    nback_post_nontarget.append(segments_nontarget)
+                    connectivity_post_target.append(con_target)
+                    connectivity_post_nontarget.append(con_nontarget)
+                    model_post_target.append(starget)
+                    model_post_nontarget.append(snontarget)
+
+                    print(
+                        f"    Target epochs: {segments_target.shape}, Non-target: {segments_nontarget.shape}"
+                    )
+
+            if "Nbackonline" in subject_data:
+                print("\n" + "=" * 60)
+                print("Processing Nbackonline (Online)")
+                print("=" * 60)
+
+                eeg_runs, marker_runs, _ = subject_data["Nbackonline"]
+                task = 2  # Online task
+
+                for run_idx, (eeg_dict, marker_dict) in enumerate(
+                    zip(eeg_runs, marker_runs)
+                ):
+                    print(f"\n  Run {run_idx + 1}/{len(eeg_runs)}:")
+
+                    eeg = eeg_dict["data"]
+                    timestamps = eeg_dict["timestamps"]
+                    m_data = marker_dict["values"]
+                    m_time = marker_dict["timestamps"]
+
+                    print(f"    EEG shape: {eeg.shape}")
+                    print(
+                        f"    Markers: {len(m_data)} events, unique: {np.unique(m_data)}"
+                    )
+
+                    # Apply filtering
+                    filtered_eeg, filtered_labels = filtering(
+                        eeg,
+                        session=session,
+                        filter=model_filter,
+                        labels=labels,
+                        fs=fs,
+                        do_car=do_car,
+                    )
+
+                    # Extract epochs
+                    segments_target, segments_nontarget = target_epochs(
+                        filtered_eeg, m_data, m_time, fs, timestamps, task
+                    )
+
+                    # Connectivity (unfiltered)
+                    con_target, con_nontarget = target_epochs(
+                        eeg, m_data, m_time, fs, timestamps, task
+                    )
+                    con_target = np.delete(con_target, np.arange(32, 39), axis=1)
+                    con_nontarget = np.delete(con_nontarget, np.arange(32, 39), axis=1)
+
+                    # Store online data
+                    nback_online_target.append(segments_target)
+                    nback_online_nontarget.append(segments_nontarget)
+                    connectivity_online_target.append(con_target)
+                    connectivity_online_nontarget.append(con_nontarget)
+
+                    print(
+                        f"    Target epochs: {segments_target.shape}, Non-target: {segments_nontarget.shape}"
+                    )
+
+            # ===== CONCATENATE PER SUBJECT =====
+            print("\n" + "=" * 60)
+            print("Concatenating all runs...")
+            print("=" * 60)
+
+            nback_pre_target_all = (
+                np.concatenate(nback_pre_target, axis=2) if nback_pre_target else None
             )
-            print(f"\n=== Loading Session {s+1} ===")
-            session_input = input("Session (1 = Relaxation, 2 = tACS): ").strip()
-            session_map = {"1": "Relaxation", "2": "tACS"}
-            """
-            session = "Relaxation"  # session_map.get(session_input, session_input)
-
-            """print("\nType options:")
-            type_options = [
-                "Eyes Closed pre",
-                "Eyes Closed post",
-                "Eyes Closed pre tACS",
-                "Eyes Closed post tACS",
-                "Eyes Closed find tACS",
-                "Eyes Closed pre nothing",
-                "Eyes Closed post nothing",
-                "Relax",
-                "Nothing",
-                "Nback",
-                "Nback + relax",
-                "Online",
-                "Nback + tACS",
-                "EOG",
-            ]
-            for i, opt in enumerate(type_options):
-                print(f"{i + 1}: {opt}")"""
-            # type_index = int(input("Type of the session (number): "))
-            # data_type = type_options[type_index - 1]
-            if s == 0:
-                runs = 4  # int(input("Number of runs in the session: "))
-                data_type = "Nback"
-            elif s == 1:
-                runs = 8
-                data_type = "Nback + relax"
-            elif s == 2:
-                runs = 8
-                data_type = "Nback"
-            N = 2
-            # int(input("N-back level (input 9 if not N-back): "))
-            N_param = None if N == 9 else N
-
-            eeg_runs, marker_runs, labels = load_project_data(
-                ID, session, task, runs, data_type, N_param
+            nback_pre_nontarget_all = (
+                np.concatenate(nback_pre_nontarget, axis=2)
+                if nback_pre_nontarget
+                else None
             )
-            do_car = 1  # input("Apply CAR? [y/n]: ").strip().lower() == "y"
-
-            for eeg_dict, marker_dict in zip(eeg_runs, marker_runs):
-                eeg = eeg_dict["data"]
-                timestamps = eeg_dict["timestamps"]
-                m_data = marker_dict["values"]
-                m_time = marker_dict["timestamps"]
-                fs = 512
-
-                filtered_eeg = filtering(
-                    eeg,
-                    session=session,
-                    filter=model_filter,
-                    labels=labels,
-                    fs=fs,
-                    do_car=do_car,
-                )
-
-                online_channel_names = [
-                    "FZ",
-                    "CZ",
-                    "PZ",
-                    "P3",
-                    "P4",
-                    "POZ",
-                ]
-
-                eeg_channels, kept_labels, kept_idx = select_channels(
-                    filtered_eeg, labels, online_channel_names
-                )
-
-                segments_target, segments_nontarget = target_epochs(
-                    filtered_eeg, m_data, m_time, fs, timestamps, task
-                )
-
-                con_target, con_nontarget = target_epochs(
-                    eeg, m_data, m_time, fs, timestamps, task
-                )
-                con_target = np.delete(con_target, np.arange(32, 39), axis=1)
-                con_nontarget = np.delete(con_nontarget, np.arange(32, 39), axis=1)
-
-                starget, snontarget = target_epochs(
-                    eeg_channels, m_data, m_time, fs, timestamps, task
-                )
-
-                session_target.append(segments_target)
-                session_nontarget.append(segments_nontarget)
-                connect_t.append(con_target)
-                connect_nont.append(con_nontarget)
-                model_input_target.append(starget)
-                model_input_nontarget.append(snontarget)
-
-            # ✅ FIXED: EXTEND instead of OVERWRITE
-            if task == 1 and data_type == "Nback" and session == "Relaxation":
-                nback_pre_target.extend(session_target)
-                nback_pre_nontarget.extend(session_nontarget)
-                model_pre_target.extend(model_input_target)
-                model_pre_nontarget.extend(model_input_nontarget)
-                connectivity_pre_target.extend(connect_t)
-                connectivity_pre_nontarget.extend(connect_nont)
-            elif task == 1 and data_type == "Nback + relax" and session == "Relaxation":
-                nback_post_target.extend(session_target)
-                nback_post_nontarget.extend(session_nontarget)
-                model_post_target.extend(model_input_target)
-                model_post_nontarget.extend(model_input_nontarget)
-                connectivity_post_target.extend(connect_t)
-                connectivity_post_nontarget.extend(connect_nont)
-            elif task == 2 and data_type == "Nback" and session == "Relaxation":
-                nback_online_target.extend(session_target)
-                nback_online_nontarget.extend(session_nontarget)
-                connectivity_online_target.extend(connect_t)
-                connectivity_online_nontarget.extend(connect_nont)
-
-        # ===== CONCATENATE PER SUBJECT =====
-        nback_pre_target_all = (
-            np.concatenate(nback_pre_target, axis=2) if nback_pre_target else None
-        )
-        nback_pre_nontarget_all = (
-            np.concatenate(nback_pre_nontarget, axis=2) if nback_pre_nontarget else None
-        )
-        nback_post_target_all = (
-            np.concatenate(nback_post_target, axis=2) if nback_post_target else None
-        )
-        nback_post_nontarget_all = (
-            np.concatenate(nback_post_nontarget, axis=2)
-            if nback_post_nontarget
-            else None
-        )
-        nback_online_target_all = (
-            np.concatenate(nback_online_target, axis=2) if nback_online_target else None
-        )
-        nback_online_nontarget_all = (
-            np.concatenate(nback_online_nontarget, axis=2)
-            if nback_online_nontarget
-            else None
-        )
-        connectivity_pre_target_all = (
-            np.concatenate(connectivity_pre_target, axis=2)
-            if connectivity_pre_target
-            else None
-        )
-        connectivity_pre_nontarget_all = (
-            np.concatenate(connectivity_pre_nontarget, axis=2)
-            if connectivity_pre_nontarget
-            else None
-        )
-        connectivity_post_target_all = (
-            np.concatenate(connectivity_post_target, axis=2)
-            if connectivity_post_target
-            else None
-        )
-        connectivity_post_nontarget_all = (
-            np.concatenate(connectivity_post_nontarget, axis=2)
-            if connectivity_post_nontarget
-            else None
-        )
-        connectivity_online_target_all = (
-            np.concatenate(connectivity_online_target, axis=2)
-            if connectivity_online_target
-            else None
-        )
-        connectivity_online_nontarget_all = (
-            np.concatenate(connectivity_online_nontarget, axis=2)
-            if connectivity_online_nontarget
-            else None
-        )
-
-        model_pre_target_all = (
-            np.concatenate(model_pre_target, axis=2) if model_pre_target else None
-        )
-        model_pre_nontarget_all = (
-            np.concatenate(model_pre_nontarget, axis=2) if model_pre_nontarget else None
-        )
-        model_post_target_all = (
-            np.concatenate(model_post_target, axis=2) if model_post_target else None
-        )
-        model_post_nontarget_all = (
-            np.concatenate(model_post_nontarget, axis=2)
-            if model_post_nontarget
-            else None
-        )
-
-        print(f"\n✅ Subject {ID} concatenated shapes:")
-        if nback_pre_target_all is not None:
-            print("  nback_pre_target_all:", nback_pre_target_all.shape)
-        if nback_pre_nontarget_all is not None:
-            print("  nback_pre_nontarget_all:", nback_pre_nontarget_all.shape)
-        if nback_post_target_all is not None:
-            print("  nback_post_target_all:", nback_post_target_all.shape)
-        if nback_post_nontarget_all is not None:
-            print("  nback_post_nontarget_all:", nback_post_nontarget_all.shape)
-        if nback_online_target_all is not None:
-            print("  online_target:", nback_online_target_all.shape)
-        if nback_online_nontarget_all is not None:
-            print("  online_nontarget:", nback_online_nontarget_all.shape)
-
-        print("\n✅ Subject {ID} ML input shapes:")
-        if model_pre_target_all is not None:
-            print("  model_pre_target_all:", model_pre_target_all.shape)
-        if model_pre_nontarget_all is not None:
-            print("  model_pre_nontarget_all:", model_pre_nontarget_all.shape)
-        if model_post_target_all is not None:
-            print("  model_post_target_all:", model_post_target_all.shape)
-        if model_post_nontarget_all is not None:
-            print("  model_post_nontarget_all:", model_post_nontarget_all.shape)
-
-        print("\n✅ Subject {ID} connectivity input shapes:")
-        if connectivity_pre_target_all is not None:
-            print(" Connectivity_pre_target_all:", connectivity_pre_target_all.shape)
-        if connectivity_pre_nontarget_all is not None:
-            print(
-                "  connectivity_pre_nontarget_all:",
-                connectivity_pre_nontarget_all.shape,
+            nback_post_target_all = (
+                np.concatenate(nback_post_target, axis=2) if nback_post_target else None
             )
-        if connectivity_post_target_all is not None:
-            print("  connectivity_post_target_all:", connectivity_post_target_all.shape)
-        if connectivity_post_nontarget_all is not None:
-            print(
-                "  connectivity_post_nontarget_all:",
-                connectivity_post_nontarget_all.shape,
-            )
-        if connectivity_online_target_all is not None:
-            print(
-                "  connectivity_online_target_all:",
-                connectivity_online_target_all.shape,
-            )
-        if connectivity_online_nontarget_all is not None:
-            print(
-                "  connectivity_online_nontarget_all:",
-                connectivity_online_nontarget_all.shape,
+            nback_post_nontarget_all = (
+                np.concatenate(nback_post_nontarget, axis=2)
+                if nback_post_nontarget
+                else None
             )
 
-        # ===== STORE THIS SUBJECT'S DATA =====
-        all_subjects_data[ID] = {
-            "nback_pre_target_all": nback_pre_target_all,
-            "nback_pre_nontarget_all": nback_pre_nontarget_all,
-            "nback_post_target_all": nback_post_target_all,
-            "nback_post_nontarget_all": nback_post_nontarget_all,
-            "nback_online_target_all": nback_online_target_all,
-            "nback_online_nontarget_all": nback_online_nontarget_all,
-            "model_pre_target_all": model_pre_target_all,
-            "model_pre_nontarget_all": model_pre_nontarget_all,
-            "model_post_target_all": model_post_target_all,
-            "model_post_nontarget_all": model_post_nontarget_all,
-            "connectivity_pre_target_all": connectivity_pre_target_all,
-            "connectivity_pre_nontarget_all": connectivity_pre_nontarget_all,
-            "connectivity_post_target_all": connectivity_post_target_all,
-            "connectivity_post_nontarget_all": connectivity_post_nontarget_all,
-            "connectivity_online_target_all": connectivity_online_target_all,
-            "connectivity_online_nontarget_all": connectivity_online_nontarget_all,
-            "labels": labels,
-            "session": session,
-            "kept_labels": kept_labels,
-            "fs": fs,
-            "model_pre_target": model_pre_target,
-            "model_pre_nontarget": model_pre_nontarget,
-            "model_post_target": model_post_target,
-            "model_post_nontarget": model_post_nontarget,
-        }
+            connectivity_pre_target_all = (
+                np.concatenate(connectivity_pre_target, axis=2)
+                if connectivity_pre_target
+                else None
+            )
+            connectivity_pre_nontarget_all = (
+                np.concatenate(connectivity_pre_nontarget, axis=2)
+                if connectivity_pre_nontarget
+                else None
+            )
+            connectivity_post_target_all = (
+                np.concatenate(connectivity_post_target, axis=2)
+                if connectivity_post_target
+                else None
+            )
+            connectivity_post_nontarget_all = (
+                np.concatenate(connectivity_post_nontarget, axis=2)
+                if connectivity_post_nontarget
+                else None
+            )
+            nback_online_target_all = (
+                np.concatenate(nback_online_target, axis=2)
+                if nback_online_target
+                else None
+            )
+            nback_online_nontarget_all = (
+                np.concatenate(nback_online_nontarget, axis=2)
+                if nback_online_nontarget
+                else None
+            )
 
-        # ===== CLEANUP PER SUBJECT =====
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
-        log_file.close()
+            connectivity_online_target_all = (
+                np.concatenate(connectivity_online_target, axis=2)
+                if connectivity_online_target
+                else None
+            )
+            connectivity_online_nontarget_all = (
+                np.concatenate(connectivity_online_nontarget, axis=2)
+                if connectivity_online_nontarget
+                else None
+            )
 
-        print(f"✅ Subject {ID} complete!\n")
+            model_pre_target_all = (
+                np.concatenate(model_pre_target, axis=2) if model_pre_target else None
+            )
+            model_pre_nontarget_all = (
+                np.concatenate(model_pre_nontarget, axis=2)
+                if model_pre_nontarget
+                else None
+            )
+            model_post_target_all = (
+                np.concatenate(model_post_target, axis=2) if model_post_target else None
+            )
+            model_post_nontarget_all = (
+                np.concatenate(model_post_nontarget, axis=2)
+                if model_post_nontarget
+                else None
+            )
 
-    # ===== NOW COMBINE ALL SUBJECTS =====
+            print(f"\n✅ Subject {subject_id} concatenated shapes:")
+            if nback_pre_target_all is not None:
+                print(f"  nback_pre_target_all: {nback_pre_target_all.shape}")
+            if nback_pre_nontarget_all is not None:
+                print(f"  nback_pre_nontarget_all: {nback_pre_nontarget_all.shape}")
+            if nback_post_target_all is not None:
+                print(f"  nback_post_target_all: {nback_post_target_all.shape}")
+            if nback_post_nontarget_all is not None:
+                print(f"  nback_post_nontarget_all: {nback_post_nontarget_all.shape}")
+            if nback_online_target_all is not None:
+                print(f"  nback_online_target_all: {nback_online_target_all.shape}")
+            if nback_online_nontarget_all is not None:
+                print(
+                    f"  nback_online_nontarget_all: {nback_online_nontarget_all.shape}"
+                )
+
+            print(f"\n✅ Subject {subject_id} ML input shapes:")
+            if model_pre_target_all is not None:
+                print(f"  model_pre_target_all: {model_pre_target_all.shape}")
+            if model_pre_nontarget_all is not None:
+                print(f"  model_pre_nontarget_all: {model_pre_nontarget_all.shape}")
+            if model_post_target_all is not None:
+                print(f"  model_post_target_all: {model_post_target_all.shape}")
+            if model_post_nontarget_all is not None:
+                print(f"  model_post_nontarget_all: {model_post_nontarget_all.shape}")
+
+            results = {
+                "nback_pre_target_all": nback_pre_target_all,
+                "nback_pre_nontarget_all": nback_pre_nontarget_all,
+                "nback_post_target_all": nback_post_target_all,
+                "nback_post_nontarget_all": nback_post_nontarget_all,
+                "nback_online_target_all": nback_online_target_all,
+                "nback_online_nontarget_all": nback_online_nontarget_all,
+                "model_pre_target_all": model_pre_target_all,
+                "model_pre_nontarget_all": model_pre_nontarget_all,
+                "model_post_target_all": model_post_target_all,
+                "model_post_nontarget_all": model_post_nontarget_all,
+                "connectivity_pre_target_all": connectivity_pre_target_all,
+                "connectivity_pre_nontarget_all": connectivity_pre_nontarget_all,
+                "connectivity_post_target_all": connectivity_post_target_all,
+                "connectivity_post_nontarget_all": connectivity_post_nontarget_all,
+                "connectivity_online_target_all": connectivity_online_target_all,
+                "connectivity_online_nontarget_all": connectivity_online_nontarget_all,
+                "labels": labels,
+                "session": session,
+                "kept_labels": kept_labels,
+                "fs": fs,
+                "model_pre_target": model_pre_target_all,
+                "model_pre_nontarget": model_pre_nontarget_all,
+                "model_post_target": model_post_target_all,
+                "model_post_nontarget": model_post_nontarget_all,
+            }
+
+            print(f"\n✅ Subject {subject_id} complete!")
+            return results
+
+        finally:
+            # Restore stdout/stderr
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            log_file.close()
+
+
+def main():
+    print("=" * 60)
+    print("OFFLINE P300 ANALYSIS")
+    print("=" * 60)
+
+    # Specify subjects manually
+    SUBJECT_IDS = [401, 402, 202, 312]  # , 403, 203]
+
+    print(f"\n📋 Processing subjects: {SUBJECT_IDS}")
+
+    # Storage for all subjects
+    all_subjects_data = {}
+    all_subjects_data_online = {}
+
+    # Process each subject
+    for subject_id in SUBJECT_IDS:
+        try:
+            results = process_subject_data(subject_id, mode="offline")
+            if results is not None:
+                all_subjects_data[subject_id] = results
+            results_online = process_subject_data(subject_id, mode="online")
+            if results_online is not None:
+                all_subjects_data_online[subject_id] = results_online
+        except Exception as e:
+            print(f"❌ Error processing subject {subject_id}: {e}")
+            import traceback
+
+            traceback.print_exc()
+            continue
+
     print("\n" + "=" * 70)
     print("ALL SUBJECTS LOADED - COMBINING DATA")
     print("=" * 70)
@@ -852,8 +520,12 @@ def main():
     all_connect_post_nontarget = []
     all_connect_online_target = []
     all_connect_online_nontarget = []
+    all_model_pre_target = []
+    all_model_pre_nontarget = []
+    all_model_post_target = []
+    all_model_post_nontarget = []
 
-    for ID, data in all_subjects_data.items():
+    for subject_id, data in all_subjects_data.items():
         if data["nback_pre_target_all"] is not None:
             all_pre_target.append(data["nback_pre_target_all"])
         if data["nback_pre_nontarget_all"] is not None:
@@ -862,9 +534,9 @@ def main():
             all_post_target.append(data["nback_post_target_all"])
         if data["nback_post_nontarget_all"] is not None:
             all_post_nontarget.append(data["nback_post_nontarget_all"])
-        if data["nback_online_target_all"] is not None:
+        if data.get("nback_online_target_all") is not None:
             all_online_target.append(data["nback_online_target_all"])
-        if data["nback_online_nontarget_all"] is not None:
+        if data.get("nback_online_nontarget_all") is not None:
             all_online_nontarget.append(data["nback_online_nontarget_all"])
         if data["connectivity_pre_target_all"] is not None:
             all_connect_pre_target.append(data["connectivity_pre_target_all"])
@@ -874,12 +546,20 @@ def main():
             all_connect_post_target.append(data["connectivity_post_target_all"])
         if data["connectivity_post_nontarget_all"] is not None:
             all_connect_post_nontarget.append(data["connectivity_post_nontarget_all"])
-        if data["connectivity_online_target_all"] is not None:
+        if data.get("connectivity_online_target_all") is not None:
             all_connect_online_target.append(data["connectivity_online_target_all"])
-        if data["connectivity_online_nontarget_all"] is not None:
+        if data.get("connectivity_online_nontarget_all") is not None:
             all_connect_online_nontarget.append(
                 data["connectivity_online_nontarget_all"]
             )
+        if data.get("model_pre_target") is not None:
+            all_model_pre_target.append(data["model_pre_target"])
+        if data.get("model_pre_nontarget") is not None:
+            all_model_pre_nontarget.append(data["model_pre_nontarget"])
+        if data.get("model_post_target") is not None:
+            all_model_post_target.append(data["model_post_target"])
+        if data.get("model_post_nontarget") is not None:
+            all_model_post_nontarget.append(data["model_post_nontarget"])
 
     # Concatenate across ALL subjects (axis=2 = trials)
     nback_pre_target_all = (
@@ -887,6 +567,19 @@ def main():
     )
     nback_pre_nontarget_all = (
         np.concatenate(all_pre_nontarget, axis=2) if all_pre_nontarget else None
+    )
+    nback_post_target_all = (
+        np.concatenate(all_post_target, axis=2) if all_post_target else None
+    )
+    nback_post_nontarget_all = (
+        np.concatenate(all_post_nontarget, axis=2) if all_post_nontarget else None
+    )
+    # ADD THESE:
+    nback_online_target_all = (
+        np.concatenate(all_online_target, axis=2) if all_online_target else None
+    )
+    nback_online_nontarget_all = (
+        np.concatenate(all_online_nontarget, axis=2) if all_online_nontarget else None
     )
     connectivity_pre_target_all = (
         np.concatenate(all_connect_pre_target, axis=2)
@@ -898,12 +591,6 @@ def main():
         if all_connect_pre_nontarget
         else None
     )
-    nback_post_target_all = (
-        np.concatenate(all_post_target, axis=2) if all_post_target else None
-    )
-    nback_post_nontarget_all = (
-        np.concatenate(all_post_nontarget, axis=2) if all_post_nontarget else None
-    )
     connectivity_post_target_all = (
         np.concatenate(all_connect_post_target, axis=2)
         if all_connect_post_target
@@ -913,12 +600,6 @@ def main():
         np.concatenate(all_connect_post_nontarget, axis=2)
         if all_connect_post_nontarget
         else None
-    )
-    nback_online_target_all = (
-        np.concatenate(all_online_target, axis=2) if all_online_target else None
-    )
-    nback_online_nontarget_all = (
-        np.concatenate(all_online_nontarget, axis=2) if all_online_nontarget else None
     )
     connectivity_online_target_all = (
         np.concatenate(all_connect_online_target, axis=2)
@@ -930,26 +611,94 @@ def main():
         if all_connect_online_nontarget
         else None
     )
-
-    # Get metadata from first subject
-    first_subject_data = next(iter(all_subjects_data.values()))
-    labels = first_subject_data["labels"]
-    fs = first_subject_data["fs"]
-    session = first_subject_data["session"]
+    model_pre_target_all = (
+        np.concatenate(all_model_pre_target, axis=2) if all_model_pre_target else None
+    )
+    model_pre_nontarget_all = (
+        np.concatenate(all_model_pre_nontarget, axis=2)
+        if all_model_pre_nontarget
+        else None
+    )
+    model_post_target_all = (
+        np.concatenate(all_model_post_target, axis=2) if all_model_post_target else None
+    )
+    model_post_nontarget_all = (
+        np.concatenate(all_model_post_nontarget, axis=2)
+        if all_model_post_nontarget
+        else None
+    )
 
     print("\n✅ COMBINED data from all subjects:")
     if nback_pre_target_all is not None:
-        print("nback_pre_target_all:", nback_pre_target_all.shape)
+        print(f"nback_pre_target_all: {nback_pre_target_all.shape}")
     if nback_pre_nontarget_all is not None:
-        print("nback_pre_nontarget_all:", nback_pre_nontarget_all.shape)
+        print(f"nback_pre_nontarget_all: {nback_pre_nontarget_all.shape}")
     if nback_post_target_all is not None:
-        print("nback_post_target_all:", nback_post_target_all.shape)
+        print(f"nback_post_target_all: {nback_post_target_all.shape}")
     if nback_post_nontarget_all is not None:
-        print("nback_post_nontarget_all:", nback_post_nontarget_all.shape)
+        print(f"nback_post_nontarget_all: {nback_post_nontarget_all.shape}")
     if nback_online_target_all is not None:
-        print("online_target:", nback_online_target_all.shape)
+        print(f"nback_online_target_all: {nback_online_target_all.shape}")
     if nback_online_nontarget_all is not None:
-        print("online_nontarget:", nback_online_nontarget_all.shape)
+        print(f"nback_online_nontarget_all: {nback_online_nontarget_all.shape}")
+
+    if model_pre_target_all is not None:
+        print("  model_pre_target_all:", model_pre_target_all.shape)
+    if model_pre_nontarget_all is not None:
+        print("  model_pre_nontarget_all:", model_pre_nontarget_all.shape)
+    if model_post_target_all is not None:
+        print("  model_post_target_all:", model_post_target_all.shape)
+    if model_post_nontarget_all is not None:
+        print("  model_post_nontarget_all:", model_post_nontarget_all.shape)
+
+    if connectivity_pre_target_all is not None:
+        print(" Connectivity_pre_target_all:", connectivity_pre_target_all.shape)
+    if connectivity_pre_nontarget_all is not None:
+        print(
+            "  connectivity_pre_nontarget_all:",
+            connectivity_pre_nontarget_all.shape,
+        )
+    if connectivity_post_target_all is not None:
+        print("  connectivity_post_target_all:", connectivity_post_target_all.shape)
+    if connectivity_post_nontarget_all is not None:
+        print(
+            "  connectivity_post_nontarget_all:",
+            connectivity_post_nontarget_all.shape,
+        )
+    if connectivity_online_target_all is not None:
+        print(
+            "  connectivity_online_target_all:",
+            connectivity_online_target_all.shape,
+        )
+    if connectivity_online_nontarget_all is not None:
+        print(
+            "  connectivity_online_nontarget_all:",
+            connectivity_online_nontarget_all.shape,
+        )
+
+    fs = 512
+
+    print("\n" + "=" * 70)
+    print(f"✅ Finished processing {len(all_subjects_data)} subjects")
+    print("=" * 70)
+
+    # Get labels from first subject's data
+    first_subject_data = next(iter(all_subjects_data.values()))
+    labels = first_subject_data["labels"]  # Original 39 labels
+
+    # Remove EOG/AUX channels from labels to match filtered data (32 channels)
+    if len(labels) == 39:
+        labels = [labels[i] for i in range(len(labels)) if i not in range(32, 39)]
+
+    fs = first_subject_data["fs"]
+    session = first_subject_data["session"]
+    kept_labels = first_subject_data.get("kept_labels")
+
+    print(f"\n📊 Using labels from first subject:")
+    print(f"  Total channels: {len(labels)}")
+    print(f"  Labels: {labels}")
+    print(f"  Sampling rate: {fs} Hz")
+    print(f"  Session: {session}")
 
     plot_number = int(input("How many topoplot do y ou want ?"))
 
@@ -1117,7 +866,7 @@ def main():
         analysis = int(input("How many ERP comparisons do you want to run ?"))
         for i in range(0, analysis):
             run_analysis(
-                ID=ID,
+                ID=SUBJECT_IDS,
                 session=session,
                 labels=labels,
                 p300_pre=nback_pre_target_all,
@@ -1133,7 +882,7 @@ def main():
         analysis = int(input("How many ERP analyses do you want to run ?"))
         for i in range(0, analysis):
             run_analysis(
-                ID=ID,
+                ID=SUBJECT_IDS,
                 session=session,
                 labels=labels,
                 p300_pre=nback_pre_target_all,
@@ -1151,8 +900,8 @@ def main():
         # ----------------------------
         # 0) Choose which run lists to use
         #    (swap these to your PRE/POST sets as needed)
-        runs_target = model_post_target  # list-like: one element per run
-        runs_nontarget = model_post_nontarget  # list-like: one element per run
+        runs_target = model_post_target_all  # list-like: one element per run
+        runs_nontarget = model_post_nontarget_all  # list-like: one element per run
         # ----------------------------
 
         tpr_tnr_scorer = make_scorer(tpr_tnr_product, greater_is_better=True)
@@ -1310,6 +1059,15 @@ def main():
             except Exception:
                 pass
 
+            online_channel_names = [
+                "FZ",
+                "CZ",
+                "PZ",
+                "P3",
+                "P4",
+                "POZ",
+            ]
+
             det_best.fit(X_flat, y)  # refit once, deterministically
 
             Wc_refit = det_best.named_steps["cca_wave"].Wc_  # (C, K)
@@ -1411,7 +1169,9 @@ def main():
 
             model_dir = "/home/alexandra-admin/Documents/saved_models_cca"
             os.makedirs(model_dir, exist_ok=True)
-            model_path = os.path.join(model_dir, f"p300_model_cca_sub-{ID}.pkl")
+            model_path = os.path.join(
+                model_dir, f"p300_model_cca_sub-{SUBJECT_IDS}.pkl"
+            )
 
             saved_threshold = float(best_thr) if "best_thr" in globals() else 0.50
 
@@ -1462,7 +1222,7 @@ def main():
                 "scaler": None,
                 "threshold": saved_threshold,
                 "feature_meta": feature_meta,
-                "subject_id": ID,
+                "subject_id": SUBJECT_IDS,
             }
 
             with open(model_path, "wb") as f:
@@ -1632,7 +1392,7 @@ def main():
             # 9) Save exactly what you picked
             model_dir = "/home/alexandra-admin/Documents/saved_models"
             os.makedirs(model_dir, exist_ok=True)
-            model_path = os.path.join(model_dir, f"p300_model_sub-{ID}.pkl")
+            model_path = os.path.join(model_dir, f"p300_model_sub-{SUBJECT_IDS}.pkl")
 
             feature_meta = {
                 "channels": locals().get("labels", None),
@@ -1799,7 +1559,7 @@ def main():
                 "version": "xdawn_pipeline_v1_deterministic",
             }
 
-            model_path = f"/home/alexandra-admin/Documents/saved_models_xdawn/p300_model_xdawn_sub-{ID}.pkl"
+            model_path = f"/home/alexandra-admin/Documents/saved_models_xdawn/p300_model_xdawn_sub-{SUBJECT_IDS}.pkl"
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
             with open(model_path, "wb") as f:
                 pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1808,13 +1568,6 @@ def main():
             print(
                 f"   θ={bundle['threshold']:.2f}, channels={bundle['train_channels']}"
             )
-
-    """ finally:
-        # Always restore streams and close the file, even if an error occurs
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr"""
-
-    log_file.close()
 
 
 if __name__ == "__main__":

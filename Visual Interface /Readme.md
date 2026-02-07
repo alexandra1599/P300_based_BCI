@@ -17,6 +17,53 @@ The parameters that can be changed are :
 - Total number of trials per run
 - Markers (these are values to lcok specific events to time-points in the EEG data)
 
+## N-Back Experiment Control PanelOverview
+A PySide6-based GUI control panel for managing all components of an EEG-based N-back cognitive task experiment. 
+The panel provides centralized control of data acquisition hardware, marker synchronization, experimental drivers, and recording software through an intuitive graphical interface.
+
+### Features
+**Process Management:**
+- **LED Status Indicators:** Real-time visual feedback (green=running, yellow=starting, gray=stopped, red=error)
+- **Terminal-Based Launches:** Opens applications in separate GNOME terminal windows for easy monitoring
+- **Automated Environment:** Activates conda environment automatically for all processes
+- **Graceful Shutdown:** Properly terminates processes on application close
+
+### Component Control
+**1. eegoSports**
+
+- EEG acquisition system control
+- Single-button launch in dedicated terminal
+- Status monitoring via LED indicator
+
+**2. Marker Stream**
+
+- Start/Stop/Refresh controls
+- Launches UTIL_marker_stream.py for LSL marker synchronization
+- UDP port gating for experimental driver
+
+**3. LabRecorder**
+
+- LSL data recording application
+- Opens in separate terminal for stream monitoring
+- Automatic status tracking
+
+**4. Experimental Driver**
+
+- Selectable task modes: nback (offline) or nback_online
+- Gated start (requires marker stream to be running)
+- Subject ID integration
+- Full stdout/stderr logging
+
+### Additional Features
+
+- **Subject Management:** Save and copy subject IDs to config file
+- **MNE-LSL Viewer:** Quick launch for real-time EEG visualization
+- **Initialization Script:** One-click launcher for initialize_devices.sh
+- **Log Viewer:** Multi-tabbed log display for all processes
+- **Configuration Persistence:** Automatically reads/writes config.py
+
+
+
 ## LSL Marker Stream Utility - UTIL_marker_stream.py
 ### Overview
 This utility provides synchronized marker injection into EEG data streams using Lab Streaming Layer (LSL). It listens for marker commands via UDP and timestamps them precisely against the EEG stream timeline, ensuring accurate event marking for neuroscience experiments.

@@ -503,6 +503,8 @@ def main():
             letter_onset = time.perf_counter()
             global response
             response = None
+            eeg_h.compute_baseline(duration_sec=0.2)  # 200 ms baseline
+
 
             while True:
                 now = time.perf_counter()

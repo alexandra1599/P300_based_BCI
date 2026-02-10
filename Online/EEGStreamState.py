@@ -67,7 +67,7 @@ class EEGStreamState:
                 self.valid_channel_indices = valid_indices
                 self.channel_names = valid_channel_names
 
-                # Optional: select only motor-related EEG channels
+                # Optional: select only attention-related EEG channels
                 if self.mode == "p300":
                     p300_raw = select_channels(
                         valid_raw, keep_channels=self.config.P300_CHANNEL_NAMES

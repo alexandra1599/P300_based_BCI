@@ -1,3 +1,7 @@
+
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 # Configuration file
 
 # UDP settings

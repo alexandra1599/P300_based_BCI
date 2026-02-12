@@ -1,3 +1,7 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
+
 import numpy as np
 import os
 from scipy.stats import spearmanr

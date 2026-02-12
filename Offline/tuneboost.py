@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 from xgboost import XGBClassifier
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import classification_report, make_scorer, recall_score

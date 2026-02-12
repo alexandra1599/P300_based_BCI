@@ -1,3 +1,7 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
+
 from pylsl import resolve_stream, StreamInlet
 import numpy as np
 import pyxdf

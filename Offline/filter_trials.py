@@ -1,3 +1,7 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
+
 import numpy as np
 
 def filter_trials(data, always_positive_threshold = 80, peak_to_peak_percentile=90):

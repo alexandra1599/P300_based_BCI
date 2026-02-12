@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cross_decomposition import CCA
@@ -17,7 +20,7 @@ import numpy as np
 
 class SpatialCCATimeExpanded(BaseEstimator, TransformerMixin):
     """
-    MATLAB-style time-expanded spatial CCA:
+    time-expanded spatial CCA:
       - Observations = (samples * trials), features = channels
       - For each class, build GA (C x S) template and repeat it
       - transform() -> per-trial CCA scores by projecting each time sample

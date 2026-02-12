@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import pygame
 import pyautogui
 import config

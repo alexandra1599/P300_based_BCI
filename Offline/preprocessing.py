@@ -1,3 +1,7 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
+
 from scipy.signal import welch, butter, filtfilt, iirnotch, lfilter
 import numpy as np
 from sklearn.linear_model import LinearRegression

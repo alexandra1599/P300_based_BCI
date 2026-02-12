@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import time
 import config
 from experiment_utils import LeakyIntegrator

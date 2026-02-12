@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cross_decomposition import CCA

@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import config
 import numpy as np
 import matplotlib.pyplot as plt

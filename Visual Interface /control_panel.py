@@ -1,4 +1,6 @@
 """
+© 2026 Alexandra Mikhael. All Rights Reserved.
+
 Project Control Panel (Simplified, no polling)
 Requires: pip install PySide6 psutil
 

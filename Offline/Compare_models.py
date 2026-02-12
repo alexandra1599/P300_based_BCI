@@ -1,4 +1,6 @@
-# offline_train_compare.py
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import numpy as np
 import io, sys, os, datetime
 from dataclasses import dataclass

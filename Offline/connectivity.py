@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt

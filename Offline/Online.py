@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import os, re, glob
 from pathlib import Path
 import numpy as np

@@ -1,3 +1,6 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
 import os, pickle
 from typing import Any, Dict, Optional, Tuple
 

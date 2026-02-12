@@ -1,3 +1,7 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
+
 from scipy.signal import iirnotch, butter, filtfilt, lfilter, firwin
 import numpy as np
 

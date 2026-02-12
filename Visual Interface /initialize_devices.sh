@@ -1,3 +1,7 @@
+"""
+© 2026 Alexandra Mikhael. All Rights Reserved.
+"""
+
 #!/bin/bash
 
 #Path to Conda activation script

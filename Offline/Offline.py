@@ -88,6 +88,8 @@ def process_subject_data(subject_id: int, mode: str = "offline"):
     Matches the structure of your original main() function.
     """
     # Setup logging
+    kept_labels = None
+
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     logs_dir = os.path.join(
         "/home/alexandra-admin/Documents/Offline/offline_logs", f"sub-{subject_id}"
@@ -122,6 +124,12 @@ def process_subject_data(subject_id: int, mode: str = "offline"):
             # Load all sessions for this subject
             subject_data = load_subject_data(subject_id, mode=mode)
 
+            # DEBUG: Print what sessions were actually loaded
+            print(f"\n🔍 DEBUG: Sessions loaded for subject {subject_id}:")
+            for sess_name in subject_data.keys():
+                print(f"  - {sess_name}")
+            print()
+
             # Processing parameters
             fs = 512
             do_car = 1  # Apply CAR
@@ -142,10 +150,7 @@ def process_subject_data(subject_id: int, mode: str = "offline"):
                 return None
 
             # ===== Process each session type =====
-            # Session mapping based on your original code:
-            # s=0: Nbackpre (4 runs)
-            # s=1: Nback + relax (8 runs)
-            # s=2: Nback online (8 runs)
+            # Session mapping (defined in load_data.py)
 
             # Process Nbackpre (ses-S001)
             if "Nbackpre" in subject_data:
@@ -215,7 +220,7 @@ def process_subject_data(subject_id: int, mode: str = "offline"):
                         f"    Target epochs: {segments_target.shape}, Non-target: {segments_nontarget.shape}"
                     )
 
-            # Process Nbackpost (ses-S005) - this is "Nback + relax" in original
+            # Process Nbackpost (ses-S005)
             if "Nbackpost" in subject_data:
                 print("\n" + "=" * 60)
                 print("Processing Nbackpost (Post-training)")
@@ -482,7 +487,7 @@ def main():
     print("=" * 60)
 
     # Specify subjects manually
-    SUBJECT_IDS = [401, 402, 202, 312]  # , 403, 203]
+    SUBJECT_IDS = [1]  # , 403, 203]
 
     print(f"\n📋 Processing subjects: {SUBJECT_IDS}")
 

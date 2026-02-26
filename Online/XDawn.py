@@ -1,6 +1,7 @@
 """
 © 2026 Alexandra Mikhael. All Rights Reserved.
 """
+
 import numpy as np
 from dataclasses import dataclass
 from typing import Tuple
@@ -62,7 +63,7 @@ def best_threshold_by_tpr_tnr_product(y_true, y_prob):
 class XdawnFeaturizer(BaseEstimator, TransformerMixin):
     n_components: int = 4
     p300_window_s: Tuple[float, float] = (0.25, 0.60)  # not used if feature_fn provided
-    sfreq: float = 256.0
+    sfreq: float = 512.0
     tmin: float = -0.20
     concat_classes: bool = True
     feature_fn: Optional[Callable] = (
@@ -351,10 +352,9 @@ def classify_epoch_once_xdawn(
     need_S = compute_min_window_samples_for_bundle(bundle)
 
     # --- get live window (C_live, S_live), then (S_live, C_live) ---
-    X_C_S, _ = eeg_state.get_baseline_corrected_window(need_S)
-    X_S_C = X_C_S.T  # (S, C)
+    X_S_C, _ = eeg_state.get_baseline_corrected_window(need_S)
 
-    C_live = X_S_C.shape[1]
+    C_live = X_S_C.shape[0]
     if len(online_channel_names) != C_live:
         # Keep going safely; tell yourself what's happening
         print(
@@ -403,5 +403,3 @@ def classify_epoch_once_xdawn(
         conf = p_non
     all_probs = [[time.time(), p_non, p_tar]]
     return yhat, conf, all_probs
-
-

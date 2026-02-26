@@ -1,6 +1,7 @@
 """
 © 2026 Alexandra Mikhael. All Rights Reserved.
 """
+
 import pygame
 import socket
 import time
@@ -510,7 +511,7 @@ def main():
                 eeg_h.compute_baseline(duration_sec=0.2)
             except ValueError:
                 pass
-                
+
             while True:
                 now = time.perf_counter()
                 elapsed = now - letter_onset

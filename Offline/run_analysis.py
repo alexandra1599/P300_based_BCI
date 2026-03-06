@@ -557,10 +557,10 @@ def run_analysis(
                 ["Pre", "Post"], [p300_pre, p300_post], [nop300_pre, nop300_post]
             ):
                 target = np.mean(targ[:, pz, :], axis=1)
-                nontarget = np.mean(nontarg[:, nt, :], axis=1)
+                nontarget = np.mean(nontarg[:, pz, :], axis=1)
 
                 std_target = np.std(targ[:, pz, :], axis=1) / np.sqrt(targ.shape[2])
-                std_nontarget = np.std(nontarg[:, nt, :], axis=1) / np.sqrt(
+                std_nontarget = np.std(nontarg[:, pz, :], axis=1) / np.sqrt(
                     nontarg.shape[2]
                 )
 
@@ -606,10 +606,10 @@ def run_analysis(
                 [nop300_pre, nop300_post, nop300_online],
             ):
                 target = np.mean(targ[:, pz, :], axis=1)
-                nontarget = np.mean(nontarg[:, nt, :], axis=1)
+                nontarget = np.mean(nontarg[:, pz, :], axis=1)
 
                 std_target = np.std(targ[:, pz, :], axis=1) / np.sqrt(targ.shape[2])
-                std_nontarget = np.std(nontarg[:, nt, :], axis=1) / np.sqrt(
+                std_nontarget = np.std(nontarg[:, pz, :], axis=1) / np.sqrt(
                     nontarg.shape[2]
                 )
 
